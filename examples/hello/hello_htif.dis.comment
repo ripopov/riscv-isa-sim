@@ -1,0 +1,47 @@
+
+/home/ripopov/work/riscv/riscv-isa-sim/examples/hello/hello_htif.elf:     file format elf64-littleriscv
+
+
+Disassembly of section .text:
+
+0000000080000000 <_start>:
+    # Initialize syscall_mem array with parameters for sys_write(fd=1, buf="Hello...", len=46)
+
+    80000000:	00000797          	auipc	a5,0x0          # Load PC-relative address: a5 = PC + 0 = 0x80000000
+    80000004:	0c078793          	addi	a5,a5,192       # Add offset: a5 = 0x80000000 + 192 = 0x800000c0 (syscall_mem address)
+    80000008:	04000713          	li	a4,64               # Load immediate: a4 = 64 (SYS_write syscall number)
+    8000000c:	00e7b023          	sd	a4,0(a5)            # Store doubleword: syscall_mem[0] = 64 (syscall number)
+    80000010:	00100713          	li	a4,1                # Load immediate: a4 = 1 (stdout file descriptor)
+    80000014:	00e7b423          	sd	a4,8(a5)            # Store doubleword: syscall_mem[1] = 1 (arg0: fd)
+    80000018:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x80000018
+    8000001c:	06070713          	addi	a4,a4,96        # Add offset: a4 = 0x80000018 + 96 = 0x80000078 (address of "Hello, world!" string)
+    80000020:	00e7b823          	sd	a4,16(a5)           # Store doubleword: syscall_mem[2] = 0x80000078 (arg1: buffer pointer)
+    80000024:	02e00713          	li	a4,46               # Load immediate: a4 = 46 (length of string including newline)
+    80000028:	00e7bc23          	sd	a4,24(a5)           # Store doubleword: syscall_mem[3] = 46 (arg2: length)
+
+    # Zero out remaining syscall_mem array elements (args 3-6)
+
+    8000002c:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x8000002c
+    80000030:	0a073a23          	sd	zero,180(a4)    # Store doubleword: *(0x8000002c + 180) = 0, i.e. syscall_mem[4] = 0
+    80000034:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x80000034
+    80000038:	0a073a23          	sd	zero,180(a4)    # Store doubleword: *(0x80000034 + 180) = 0, i.e. syscall_mem[5] = 0
+    8000003c:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x8000003c
+    80000040:	0a073a23          	sd	zero,180(a4)    # Store doubleword: *(0x8000003c + 180) = 0, i.e. syscall_mem[6] = 0
+    80000044:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x80000044
+    80000048:	0a073a23          	sd	zero,180(a4)    # Store doubleword: *(0x80000044 + 180) = 0, i.e. syscall_mem[7] = 0
+
+    # Send syscall command to HTIF and wait for response
+
+    8000004c:	00000717          	auipc	a4,0x0          # Load PC-relative address: a4 = PC + 0 = 0x8000004c
+    80000050:	0b470713          	addi	a4,a4,180       # Add offset: a4 = 0x8000004c + 180 = 0x80000100 (tohost address)
+    80000054:	00f73023          	sd	a5,0(a4)            # Store doubleword: tohost = syscall_mem address (send syscall request to host)
+    80000058:	00873783          	ld	a5,8(a4)            # Load doubleword: a5 = fromhost (read response from host)
+    8000005c:	fe078ee3          	beqz	a5,80000058     # Branch if equal to zero: if (fromhost == 0) goto 0x80000058 (poll until response)
+    80000060:	00000797          	auipc	a5,0x0          # Load PC-relative address: a5 = PC + 0 = 0x80000060
+    80000064:	0a07b423          	sd	zero,168(a5)    # Store doubleword: fromhost = 0 (acknowledge response)
+
+    # Exit with code 0 using HTIF protocol: payload = (code << 1) | 1
+
+    80000068:	00100793          	li	a5,1                # Load immediate: a5 = 1 (exit command: (0 << 1) | 1 = 1)
+    8000006c:	00f73023          	sd	a5,0(a4)            # Store doubleword: tohost = 1 (send exit command with code 0)
+    80000070:	0000006f          	j	80000070            # Jump unconditionally to self (infinite loop to hang)
