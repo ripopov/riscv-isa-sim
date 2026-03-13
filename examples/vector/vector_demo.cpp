@@ -31,15 +31,17 @@
  * Each test section writes a pass/fail status. At the end, the overall
  * result is printed via HTIF syscalls.
  *
- * Build: riscv64-unknown-elf-gcc -march=rv64gcv_zvl256b -mabi=lp64d
+ * Build: riscv64-unknown-elf-g++ -march=rv64gcv_zvl256b -mabi=lp64d
  *        -nostdlib -nostartfiles -T baremetal.ld -static -mcmodel=medany
- *        -O2 -fno-builtin -o vector_demo.elf vector_demo.c
+ *        -O2 -fno-builtin -o vector_demo.elf vector_demo.cpp
  *
  * Run:   spike --isa=rv64gcv_zvl256b vector_demo.elf
  */
 
 #include <stdint.h>
 #include <stddef.h>
+
+extern "C" {
 
 /* ------------------------------------------------------------------ */
 /*  HTIF (Host-Target Interface) for bare-metal I/O on Spike          */
@@ -234,10 +236,10 @@ static void test_load_store(void)
     asm volatile("vsetvli %0, %1, e32, m1, ta, ma" : "=r"(vl) : "r"(16UL));
 
     /* --- Unit-stride load & store (vle32 / vse32) --- */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"     /* load from a32 */
-        "vse32.v v1, (%1)\n\t"     /* store to b32 */
-        : : "r"(a32), "r"(b32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)  # load from a32
+        vse32.v v1, (%1)  # store to b32
+    )" : : "r"(a32), "r"(b32) : "memory"
     );
     int ok = 1;
     for (unsigned long i = 0; i < vl; i++)
@@ -249,11 +251,11 @@ static void test_load_store(void)
     for (int i = 0; i < 16; i++) c32[i] = 0;
     long stride = 8;
     unsigned long vl_strided;
-    asm volatile(
-        "vsetvli %0, %3, e32, m1, ta, ma\n\t"
-        "vlse32.v v2, (%1), %2\n\t"
-        "vse32.v v2, (%4)\n\t"         /* unit-stride store for easy verify */
-        : "=r"(vl_strided)
+    asm volatile(R"(
+        vsetvli %0, %3, e32, m1, ta, ma
+        vlse32.v v2, (%1), %2
+        vse32.v v2, (%4)  # unit-stride store for easy verify
+    )" : "=r"(vl_strided)
         : "r"(a32), "r"(stride), "r"(8UL), "r"(c32) : "memory"
     );
     ok = 1;
@@ -263,11 +265,11 @@ static void test_load_store(void)
 
     /* --- Strided store (vsse32) --- */
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v2, (%1)\n\t"           /* unit-stride load */
-        "vsse32.v v2, (%2), %3\n\t"      /* strided store */
-        : : "r"(vl_strided), "r"(a32), "r"(c32), "r"(stride) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v2, (%1)  # unit-stride load
+        vsse32.v v2, (%2), %3  # strided store
+    )" : : "r"(vl_strided), "r"(a32), "r"(c32), "r"(stride) : "memory"
     );
     ok = 1;
     for (unsigned long i = 0; i < vl_strided; i++)
@@ -277,12 +279,12 @@ static void test_load_store(void)
     /* --- Indexed load (vluxei32) --- */
     /* u32 contains byte offsets: 0, 4, 8, 12, ... */
     for (int i = 0; i < 16; i++) { u32[i] = (uint32_t)(i * 4); c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %2, e32, m1, ta, ma\n\t"
-        "vle32.v  v3, (%1)\n\t"     /* load index vector */
-        "vluxei32.v v4, (%0), v3\n\t"
-        "vse32.v v4, (%3)\n\t"
-        : : "r"(a32), "r"(u32), "r"(8UL), "r"(c32) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %2, e32, m1, ta, ma
+        vle32.v  v3, (%1)  # load index vector
+        vluxei32.v v4, (%0), v3
+        vse32.v v4, (%3)
+    )" : : "r"(a32), "r"(u32), "r"(8UL), "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -294,21 +296,21 @@ static void test_load_store(void)
     mask_buf[1] = 0x55;
     uint8_t mask_out[16];
     for (int i = 0; i < 16; i++) mask_out[i] = 0;
-    asm volatile(
-        "vsetvli zero, %2, e8, m1, ta, ma\n\t"
-        "vlm.v v0, (%0)\n\t"
-        "vsm.v v0, (%1)\n\t"
-        : : "r"(mask_buf), "r"(mask_out), "r"(16UL) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %2, e8, m1, ta, ma
+        vlm.v v0, (%0)
+        vsm.v v0, (%1)
+    )" : : "r"(mask_buf), "r"(mask_out), "r"(16UL) : "memory"
     );
     check(mask_out[0] == 0xAA && mask_out[1] == 0x55,
           "vlm.v / vsm.v (mask load/store)");
 
     /* --- Whole-register load/store (vl1re32 / vs1r) --- */
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vl1re32.v v5, (%0)\n\t"
-        "vs1r.v    v5, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vl1re32.v v5, (%0)
+        vs1r.v    v5, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     /* Check first few elements match */
     ok = 1;
@@ -319,12 +321,12 @@ static void test_load_store(void)
     /* --- Fault-only-first load (vle32ff) --- */
     unsigned long new_vl;
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %1, e32, m1, ta, ma\n\t"
-        "vle32ff.v v6, (%2)\n\t"
-        "csrr %0, vl\n\t"
-        "vse32.v v6, (%3)\n\t"
-        : "=r"(new_vl)
+    asm volatile(R"(
+        vsetvli zero, %1, e32, m1, ta, ma
+        vle32ff.v v6, (%2)
+        csrr %0, vl
+        vse32.v v6, (%3)
+    )" : "=r"(new_vl)
         : "r"(8UL), "r"(a32), "r"(c32)
         : "memory"
     );
@@ -335,11 +337,11 @@ static void test_load_store(void)
 
     /* --- 8-bit and 16-bit load/store --- */
     for (int i = 0; i < 32; i++) { a8[i] = (int8_t)(i * 3); b8[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %2, e8, m1, ta, ma\n\t"
-        "vle8.v v7, (%0)\n\t"
-        "vse8.v v7, (%1)\n\t"
-        : : "r"(a8), "r"(b8), "r"(32UL) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %2, e8, m1, ta, ma
+        vle8.v v7, (%0)
+        vse8.v v7, (%1)
+    )" : : "r"(a8), "r"(b8), "r"(32UL) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 32; i++)
@@ -347,11 +349,11 @@ static void test_load_store(void)
     check(ok, "vle8.v / vse8.v (8-bit element load/store)");
 
     for (int i = 0; i < 16; i++) { a16[i] = (int16_t)(i * 7); b16[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %2, e16, m1, ta, ma\n\t"
-        "vle16.v v8, (%0)\n\t"
-        "vse16.v v8, (%1)\n\t"
-        : : "r"(a16), "r"(b16), "r"(16UL) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %2, e16, m1, ta, ma
+        vle16.v v8, (%0)
+        vse16.v v8, (%1)
+    )" : : "r"(a16), "r"(b16), "r"(16UL) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 16; i++)
@@ -371,13 +373,13 @@ static void test_integer_arith(void)
 
     /* --- vadd --- */
     for (int i = 0; i < 16; i++) { a32[i] = i; b32[i] = 100; c32[i] = 0; }
-    asm volatile(
-        "vsetvli %0, %1, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%2)\n\t"
-        "vle32.v v2, (%3)\n\t"
-        "vadd.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%4)\n\t"
-        : "=r"(vl)
+    asm volatile(R"(
+        vsetvli %0, %1, e32, m1, ta, ma
+        vle32.v v1, (%2)
+        vle32.v v2, (%3)
+        vadd.vv v3, v1, v2
+        vse32.v v3, (%4)
+    )" : "=r"(vl)
         : "r"(16UL), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
@@ -388,12 +390,12 @@ static void test_integer_arith(void)
 
     /* vadd.vx (vector-scalar add) */
     for (int i = 0; i < 16; i++) { a32[i] = i * 10; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vadd.vx v2, v1, %2\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(5L), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vadd.vx v2, v1, %2
+        vse32.v v2, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(5L), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -403,12 +405,12 @@ static void test_integer_arith(void)
 
     /* vadd.vi (vector-immediate add) */
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vadd.vi v2, v1, 3\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(vl), "r"(a32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vadd.vi v2, v1, 3
+        vse32.v v2, (%2)
+    )" : : "r"(vl), "r"(a32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -418,13 +420,13 @@ static void test_integer_arith(void)
 
     /* --- vsub --- */
     for (int i = 0; i < 16; i++) { a32[i] = 200 + i; b32[i] = 100; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vsub.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vsub.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -434,12 +436,12 @@ static void test_integer_arith(void)
 
     /* vsub.vx */
     for (int i = 0; i < 16; i++) { a32[i] = 50 + i; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vsub.vx v2, v1, %2\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(10L), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vsub.vx v2, v1, %2
+        vse32.v v2, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(10L), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -449,12 +451,12 @@ static void test_integer_arith(void)
 
     /* --- vrsub.vi (reverse subtract: imm - v) --- */
     for (int i = 0; i < 16; i++) { a32[i] = i; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vrsub.vi v2, v1, 15\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(vl), "r"(a32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vrsub.vi v2, v1, 15
+        vse32.v v2, (%2)
+    )" : : "r"(vl), "r"(a32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -464,13 +466,13 @@ static void test_integer_arith(void)
 
     /* --- vmul --- */
     for (int i = 0; i < 16; i++) { a32[i] = i + 1; b32[i] = i + 2; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vmul.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vmul.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -480,12 +482,12 @@ static void test_integer_arith(void)
 
     /* vmul.vx */
     for (int i = 0; i < 16; i++) { a32[i] = i + 1; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vmul.vx v2, v1, %2\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(7L), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vmul.vx v2, v1, %2
+        vse32.v v2, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(7L), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -495,13 +497,13 @@ static void test_integer_arith(void)
 
     /* --- vdiv / vrem --- */
     for (int i = 0; i < 16; i++) { a32[i] = (i + 1) * 6; b32[i] = 3; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vdiv.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vdiv.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -510,12 +512,12 @@ static void test_integer_arith(void)
     check(ok, "vdiv.vv (vector-vector divide)");
 
     for (int i = 0; i < 16; i++) { a32[i] = i * 3 + 1; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vrem.vx v2, v1, %2\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(3L), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vrem.vx v2, v1, %2
+        vse32.v v2, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(3L), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -525,14 +527,14 @@ static void test_integer_arith(void)
 
     /* --- vmacc (multiply-accumulate: vd = vd + vs1 * vs2) --- */
     for (int i = 0; i < 16; i++) { a32[i] = i; b32[i] = 2; c32[i] = 10; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"   /* vs2 = a32 */
-        "vle32.v v2, (%2)\n\t"   /* vs1 = b32 */
-        "vle32.v v3, (%3)\n\t"   /* vd  = c32 (accumulator) */
-        "vmacc.vv v3, v2, v1\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)  # vs2 = a32
+        vle32.v v2, (%2)  # vs1 = b32
+        vle32.v v3, (%3)  # vd  = c32 (accumulator)
+        vmacc.vv v3, v2, v1
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -542,14 +544,14 @@ static void test_integer_arith(void)
 
     /* --- vmadd (multiply-add: vd = vs1 * vd + vs2) --- */
     for (int i = 0; i < 16; i++) { a32[i] = 3; b32[i] = 5; c32[i] = i; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"   /* vs1 = a32 = 3 */
-        "vle32.v v2, (%2)\n\t"   /* vs2 = b32 = 5 */
-        "vle32.v v3, (%3)\n\t"   /* vd  = c32 = i */
-        "vmadd.vv v3, v1, v2\n\t" /* vd = vs1 * vd + vs2 = 3*i + 5 */
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)  # vs1 = a32 = 3
+        vle32.v v2, (%2)  # vs2 = b32 = 5
+        vle32.v v3, (%3)  # vd  = c32 = i
+        vmadd.vv v3, v1, v2  # vd = vs1 * vd + vs2 = 3*i + 5
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -559,14 +561,14 @@ static void test_integer_arith(void)
 
     /* --- vnmsub / vnmsac (negate multiply-sub/acc) --- */
     for (int i = 0; i < 16; i++) { a32[i] = 2; b32[i] = 5; c32[i] = i + 1; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"   /* vs1 = 2 */
-        "vle32.v v2, (%2)\n\t"   /* vs2 = 5 */
-        "vle32.v v3, (%3)\n\t"   /* vd  = i+1 */
-        "vnmsac.vv v3, v1, v2\n\t" /* vd = vd - vs1 * vs2 = (i+1) - 2*5 */
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)  # vs1 = 2
+        vle32.v v2, (%2)  # vs2 = 5
+        vle32.v v3, (%3)  # vd  = i+1
+        vnmsac.vv v3, v1, v2  # vd = vd - vs1 * vs2 = (i+1) - 2*5
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     ok = 1;
@@ -576,13 +578,13 @@ static void test_integer_arith(void)
 
     /* --- vmulh (multiply high, signed) --- */
     for (int i = 0; i < 16; i++) { a32[i] = 0x40000000; b32[i] = 4; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vmulh.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vmulh.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     /* 0x40000000 * 4 = 0x100000000, high 32 bits = 1 */
@@ -591,27 +593,27 @@ static void test_integer_arith(void)
     /* --- Widening add (vwadd) --- */
     for (int i = 0; i < 16; i++) { a32[i] = 0x7FFFFFFF; b32[i] = 1; }
     for (int i = 0; i < 16; i++) a64[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vwadd.vv v4, v1, v2\n\t"  /* result in v4-v5 (e64, m2) */
-        "vsetvli zero, %0, e64, m2, ta, ma\n\t"
-        "vse64.v v4, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(a64)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vwadd.vv v4, v1, v2  # result in v4-v5 (e64, m2)
+        vsetvli zero, %0, e64, m2, ta, ma
+        vse64.v v4, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(a64)
         : "memory"
     );
     check(a64[0] == (int64_t)0x7FFFFFFF + 1, "vwadd.vv (widening add)");
 
     /* --- Saturating add (vsadd) --- */
     for (int i = 0; i < 16; i++) { a32[i] = 0x7FFFFFF0; b32[i] = 0x100; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vsadd.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vsadd.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(a32), "r"(b32), "r"(c32)
         : "memory"
     );
     check(c32[0] == 0x7FFFFFFF, "vsadd.vv (saturating add clamps to INT32_MAX)");
@@ -622,13 +624,13 @@ static void test_integer_arith(void)
         b32[i] = 0x100;
         c32[i] = 0;
     }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vsaddu.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(vl), "r"(u32), "r"(b32), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vsaddu.vv v3, v1, v2
+        vse32.v v3, (%3)
+    )" : : "r"(vl), "r"(u32), "r"(b32), "r"(c32)
         : "memory"
     );
     check((uint32_t)c32[0] == 0xFFFFFFFFu,
@@ -653,51 +655,51 @@ static void test_bitwise(void)
     asm volatile("vsetvli %0, %1, e32, m1, ta, ma" : "=r"(vl) : "r"(16UL));
 
     /* vand */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vand.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vand.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32) : "memory"
     );
     check((uint32_t)c32[0] == (0xFF00FF00u & 0x0F0F0F0Fu),
           "vand.vv (bitwise AND)");
 
     /* vor */
-    asm volatile(
-        "vor.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(c32) : "memory"
+    asm volatile(R"(
+        vor.vv v3, v1, v2
+        vse32.v v3, (%0)
+    )" : : "r"(c32) : "memory"
     );
     check((uint32_t)c32[0] == (0xFF00FF00u | 0x0F0F0F0Fu),
           "vor.vv (bitwise OR)");
 
     /* vxor */
-    asm volatile(
-        "vxor.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(c32) : "memory"
+    asm volatile(R"(
+        vxor.vv v3, v1, v2
+        vse32.v v3, (%0)
+    )" : : "r"(c32) : "memory"
     );
     check((uint32_t)c32[0] == (0xFF00FF00u ^ 0x0F0F0F0Fu),
           "vxor.vv (bitwise XOR)");
 
     /* vand.vi */
     for (int i = 0; i < 16; i++) { a32[i] = 0x1F; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vand.vi v3, v1, 7\n\t"
-        "vse32.v v3, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vand.vi v3, v1, 7
+        vse32.v v3, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     check(c32[0] == (0x1F & 7), "vand.vi (AND with immediate)");
 
     /* vnot via vxor with -1 */
     for (int i = 0; i < 16; i++) { a32[i] = 0x12345678; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vxor.vi v3, v1, -1\n\t"   /* NOT = XOR with all 1s */
-        "vse32.v v3, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vxor.vi v3, v1, -1  # NOT = XOR with all 1s
+        vse32.v v3, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     check((uint32_t)c32[0] == ~0x12345678u,
           "vxor.vi -1 (bitwise NOT via XOR)");
@@ -716,42 +718,42 @@ static void test_shift(void)
 
     /* vsll (shift left logical) */
     for (int i = 0; i < 16; i++) { a32[i] = 1; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vsll.vi v2, v1, 4\n\t"
-        "vse32.v v2, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vsll.vi v2, v1, 4
+        vse32.v v2, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     check(c32[0] == 16, "vsll.vi (shift left logical by 4)");
 
     /* vsrl (shift right logical) */
     for (int i = 0; i < 16; i++) { a32[i] = 256; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vsrl.vi v2, v1, 3\n\t"
-        "vse32.v v2, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vsrl.vi v2, v1, 3
+        vse32.v v2, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     check(c32[0] == 32, "vsrl.vi (shift right logical by 3)");
 
     /* vsra (shift right arithmetic) */
     for (int i = 0; i < 16; i++) { a32[i] = -128; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vsra.vi v2, v1, 2\n\t"
-        "vse32.v v2, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vsra.vi v2, v1, 2
+        vse32.v v2, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     check(c32[0] == -32, "vsra.vi (shift right arithmetic by 2)");
 
     /* vsll.vv (variable shift) */
     for (int i = 0; i < 16; i++) { a32[i] = 1; b32[i] = i; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vsll.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vsll.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32) : "memory"
     );
     int ok = 1;
     for (unsigned long i = 0; i < vl; i++)
@@ -761,12 +763,12 @@ static void test_shift(void)
     /* Narrowing shift right (vnsrl) */
     for (int i = 0; i < 16; i++) a64[i] = 0x00000002DEADBEEFLL;
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle64.v v2, (%1)\n\t"   /* load 64-bit values into v2-v3 */
-        "vnsrl.wi v4, v2, 0\n\t" /* narrow: take low 32 bits */
-        "vse32.v v4, (%2)\n\t"
-        : : "r"(vl), "r"(a64), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle64.v v2, (%1)  # load 64-bit values into v2-v3
+        vnsrl.wi v4, v2, 0  # narrow: take low 32 bits
+        vse32.v v4, (%2)
+    )" : : "r"(vl), "r"(a64), "r"(c32)
         : "memory"
     );
     check((uint32_t)c32[0] == 0xDEADBEEFu,
@@ -791,57 +793,57 @@ static void test_compare(void)
 
     /* vmseq - set mask where a32[i] == 4 (only i=4) */
     mask_buf[0] = 0;
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmseq.vv v0, v1, v2\n\t"
-        "vsm.v v0, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vmseq.vv v0, v1, v2
+        vsm.v v0, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0x10, "vmseq.vv (equal => mask bit 4 set)");
 
     /* vmsne - not equal */
     mask_buf[0] = 0;
-    asm volatile(
-        "vmsne.vv v0, v1, v2\n\t"
-        "vsm.v v0, (%0)\n\t"
-        : : "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vmsne.vv v0, v1, v2
+        vsm.v v0, (%0)
+    )" : : "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0xEF, "vmsne.vv (not-equal mask)");
 
     /* vmslt - less than */
     mask_buf[0] = 0;
-    asm volatile(
-        "vmslt.vv v0, v1, v2\n\t"  /* a32[i] < 4 ? */
-        "vsm.v v0, (%0)\n\t"
-        : : "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vmslt.vv v0, v1, v2  # a32[i] < 4 ?
+        vsm.v v0, (%0)
+    )" : : "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0x0F, "vmslt.vv (less-than: elements 0-3)");
 
     /* vmsle - less than or equal */
     mask_buf[0] = 0;
-    asm volatile(
-        "vmsle.vv v0, v1, v2\n\t"
-        "vsm.v v0, (%0)\n\t"
-        : : "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vmsle.vv v0, v1, v2
+        vsm.v v0, (%0)
+    )" : : "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0x1F, "vmsle.vv (less-equal: elements 0-4)");
 
     /* vmsgt.vi - greater than immediate */
     mask_buf[0] = 0;
-    asm volatile(
-        "vmsgt.vi v0, v1, 5\n\t"   /* a32[i] > 5 ? => {6,7} */
-        "vsm.v v0, (%0)\n\t"
-        : : "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vmsgt.vi v0, v1, 5  # a32[i] > 5 ? => {6,7}
+        vsm.v v0, (%0)
+    )" : : "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0xC0, "vmsgt.vi (greater-than 5: elements 6-7)");
 
     /* vmseq.vi - equal to immediate */
     mask_buf[0] = 0;
-    asm volatile(
-        "vmseq.vi v0, v1, 3\n\t"
-        "vsm.v v0, (%0)\n\t"
-        : : "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vmseq.vi v0, v1, 3
+        vsm.v v0, (%0)
+    )" : : "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0x08, "vmseq.vi (equal to 3: element 3)");
 }
@@ -864,11 +866,11 @@ static void test_minmax(void)
     }
 
     /* vmin */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vmin.vx v2, v1, %1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(a32), "r"(0L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vmin.vx v2, v1, %1
+        vse32.v v2, (%2)
+    )" : : "r"(a32), "r"(0L), "r"(c32) : "memory"
     );
     int ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -878,11 +880,11 @@ static void test_minmax(void)
     check(ok, "vmin.vx (clamp to min of element and 0)");
 
     /* vmax */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vmax.vx v2, v1, %1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(a32), "r"(0L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vmax.vx v2, v1, %1
+        vse32.v v2, (%2)
+    )" : : "r"(a32), "r"(0L), "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -896,11 +898,11 @@ static void test_minmax(void)
         u32[i] = (uint32_t)(i * 50);
         c32[i] = 0;
     }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vminu.vx v2, v1, %1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(u32), "r"(200UL), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vminu.vx v2, v1, %1
+        vse32.v v2, (%2)
+    )" : : "r"(u32), "r"(200UL), "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -928,14 +930,14 @@ static void test_merge_move(void)
         c32[i] = 0;
     }
     mask_buf[0] = 0xAA;  /* bits: 10101010 => elements 1,3,5,7 from v2 */
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vlm.v v0, (%4)\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vle32.v v2, (%2)\n\t"
-        "vmerge.vvm v3, v1, v2, v0\n\t"
-        "vse32.v v3, (%3)\n\t"
-        : : "r"(8UL), "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vlm.v v0, (%4)
+        vle32.v v1, (%1)
+        vle32.v v2, (%2)
+        vmerge.vvm v3, v1, v2, v0
+        vse32.v v3, (%3)
+    )" : : "r"(8UL), "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
         : "memory"
     );
     int ok = 1;
@@ -947,11 +949,11 @@ static void test_merge_move(void)
 
     /* vmv.v.x - splat scalar to vector */
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vmv.v.x v1, %1\n\t"
-        "vse32.v v1, (%2)\n\t"
-        : : "r"(8UL), "r"(42L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vmv.v.x v1, %1
+        vse32.v v1, (%2)
+    )" : : "r"(8UL), "r"(42L), "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -960,10 +962,10 @@ static void test_merge_move(void)
 
     /* vmv.v.i - splat immediate */
     for (int i = 0; i < 16; i++) c32[i] = 0;
-    asm volatile(
-        "vmv.v.i v1, 7\n\t"
-        "vse32.v v1, (%0)\n\t"
-        : : "r"(c32) : "memory"
+    asm volatile(R"(
+        vmv.v.i v1, 7
+        vse32.v v1, (%0)
+    )" : : "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -973,19 +975,19 @@ static void test_merge_move(void)
     /* vmv.x.s / vmv.s.x - scalar extract/insert */
     for (int i = 0; i < 8; i++) a32[i] = (i + 1) * 100;
     long scalar_val = 0;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.x.s %0, v1\n\t"
-        : "=r"(scalar_val) : "r"(a32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.x.s %0, v1
+    )" : "=r"(scalar_val) : "r"(a32) : "memory"
     );
     check((int32_t)scalar_val == 100, "vmv.x.s (extract element 0 = 100)");
 
     for (int i = 0; i < 8; i++) c32[i] = 0;
-    asm volatile(
-        "vmv.v.i v1, 0\n\t"
-        "vmv.s.x v1, %0\n\t"
-        "vse32.v v1, (%1)\n\t"
-        : : "r"(999L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vmv.v.i v1, 0
+        vmv.s.x v1, %0
+        vse32.v v1, (%1)
+    )" : : "r"(999L), "r"(c32) : "memory"
     );
     check(c32[0] == 999, "vmv.s.x (insert scalar 999 at element 0)");
 }
@@ -1002,12 +1004,12 @@ static void test_extension(void)
 
     /* vsext.vf2 - sign extend 16-bit to 32-bit */
     for (int i = 0; i < 16; i++) { a16[i] = (int16_t)(-(i + 1)); c32[i] = 0; }
-    asm volatile(
-        "vsetvli %0, %1, e32, m1, ta, ma\n\t"
-        "vle16.v v1, (%2)\n\t"
-        "vsext.vf2 v2, v1\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : "=r"(vl) : "r"(8UL), "r"(a16), "r"(c32)
+    asm volatile(R"(
+        vsetvli %0, %1, e32, m1, ta, ma
+        vle16.v v1, (%2)
+        vsext.vf2 v2, v1
+        vse32.v v2, (%3)
+    )" : "=r"(vl) : "r"(8UL), "r"(a16), "r"(c32)
         : "memory"
     );
     int ok = 1;
@@ -1017,12 +1019,12 @@ static void test_extension(void)
 
     /* vzext.vf2 - zero extend 16-bit to 32-bit */
     for (int i = 0; i < 16; i++) { a16[i] = (int16_t)0xFF00; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle16.v v1, (%1)\n\t"
-        "vzext.vf2 v2, v1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(8UL), "r"(a16), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle16.v v1, (%1)
+        vzext.vf2 v2, v1
+        vse32.v v2, (%2)
+    )" : : "r"(8UL), "r"(a16), "r"(c32)
         : "memory"
     );
     check((uint32_t)c32[0] == 0x0000FF00u,
@@ -1045,12 +1047,12 @@ static void test_reductions(void)
     for (unsigned long i = 0; i < vl; i++) a32[i] = (int32_t)(i + 1);
     long expected_sum = 0;
     for (unsigned long i = 0; i < vl; i++) expected_sum += (long)(i + 1);
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.i v2, 0\n\t"
-        "vredsum.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.i v2, 0
+        vredsum.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32) : "memory"
     );
     check((int32_t)result == (int32_t)expected_sum,
           "vredsum.vs (sum reduction)");
@@ -1058,35 +1060,35 @@ static void test_reductions(void)
     /* vredmax - max reduction */
     for (unsigned long i = 0; i < vl; i++) a32[i] = (int32_t)i;
     a32[vl > 3 ? 3 : 0] = 999;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.x v2, %2\n\t"
-        "vredmax.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32), "r"(-1000L) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.x v2, %2
+        vredmax.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32), "r"(-1000L) : "memory"
     );
     check((int32_t)result == 999, "vredmax.vs (max element = 999)");
 
     /* vredmin - min reduction */
     for (unsigned long i = 0; i < vl; i++) a32[i] = (int32_t)(i * 10);
     a32[vl > 2 ? 2 : 0] = -42;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.x v2, %2\n\t"
-        "vredmin.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32), "r"(1000L) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.x v2, %2
+        vredmin.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32), "r"(1000L) : "memory"
     );
     check((int32_t)result == -42, "vredmin.vs (min element = -42)");
 
     /* vredor - OR reduction */
     for (unsigned long i = 0; i < vl; i++) a32[i] = 1 << (int)i;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.i v2, 0\n\t"
-        "vredor.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.i v2, 0
+        vredor.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32) : "memory"
     );
     int32_t expected_or = (1 << (int)vl) - 1;
     check((int32_t)result == expected_or, "vredor.vs (OR of powers of 2)");
@@ -1094,12 +1096,12 @@ static void test_reductions(void)
     /* vredand - AND reduction */
     for (unsigned long i = 0; i < vl; i++) a32[i] = 0xFF;
     a32[vl > 3 ? 3 : 0] = 0x0F;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.x v2, %2\n\t"
-        "vredand.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32), "r"(0xFFL) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.x v2, %2
+        vredand.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32), "r"(0xFFL) : "memory"
     );
     check((int32_t)result == 0x0F,
           "vredand.vs (AND reduction limited by 0x0F element)");
@@ -1108,26 +1110,26 @@ static void test_reductions(void)
     for (unsigned long i = 0; i < vl; i++) a32[i] = 1;
     /* Make sure we have an even count of 1s */
     if (vl & 1) a32[vl - 1] = 0;
-    asm volatile(
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.i v2, 0\n\t"
-        "vredxor.vs v3, v1, v2\n\t"
-        "vmv.x.s %0, v3\n\t"
-        : "=r"(result) : "r"(a32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%1)
+        vmv.v.i v2, 0
+        vredxor.vs v3, v1, v2
+        vmv.x.s %0, v3
+    )" : "=r"(result) : "r"(a32) : "memory"
     );
     check((int32_t)result == 0, "vredxor.vs (XOR of even count of 1s = 0)");
 
     /* Widening sum reduction (vwredsum) */
     for (unsigned long i = 0; i < vl; i++) a32[i] = 0x40000000;
-    asm volatile(
-        "vsetvli zero, %2, e64, m1, ta, ma\n\t"
-        "vmv.v.i v4, 0\n\t"
-        "vsetvli zero, %2, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vwredsum.vs v4, v1, v4\n\t"
-        "vsetvli zero, %2, e64, m1, ta, ma\n\t"
-        "vmv.x.s %0, v4\n\t"
-        : "=r"(result) : "r"(a32), "r"(vl) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %2, e64, m1, ta, ma
+        vmv.v.i v4, 0
+        vsetvli zero, %2, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vwredsum.vs v4, v1, v4
+        vsetvli zero, %2, e64, m1, ta, ma
+        vmv.x.s %0, v4
+    )" : "=r"(result) : "r"(a32), "r"(vl) : "memory"
     );
     check(result == (long)vl * 0x40000000LL,
           "vwredsum.vs (widening sum avoids overflow)");
@@ -1148,66 +1150,66 @@ static void test_mask_ops(void)
     mask_buf[0] = 0xF0;
     mask_buf[1] = 0x3C;
     uint8_t mout[4] = {0};
-    asm volatile(
-        "vlm.v v1, (%0)\n\t"
-        "vlm.v v2, (%1)\n\t"
-        "vmand.mm v3, v1, v2\n\t"
-        "vsm.v v3, (%2)\n\t"
-        : : "r"(&mask_buf[0]), "r"(&mask_buf[1]), "r"(mout) : "memory"
+    asm volatile(R"(
+        vlm.v v1, (%0)
+        vlm.v v2, (%1)
+        vmand.mm v3, v1, v2
+        vsm.v v3, (%2)
+    )" : : "r"(&mask_buf[0]), "r"(&mask_buf[1]), "r"(mout) : "memory"
     );
     check(mout[0] == (0xF0 & 0x3C), "vmand.mm (mask AND)");
 
     /* vmor.mm */
-    asm volatile(
-        "vmor.mm v3, v1, v2\n\t"
-        "vsm.v v3, (%0)\n\t"
-        : : "r"(mout) : "memory"
+    asm volatile(R"(
+        vmor.mm v3, v1, v2
+        vsm.v v3, (%0)
+    )" : : "r"(mout) : "memory"
     );
     check(mout[0] == (0xF0 | 0x3C), "vmor.mm (mask OR)");
 
     /* vmxor.mm */
-    asm volatile(
-        "vmxor.mm v3, v1, v2\n\t"
-        "vsm.v v3, (%0)\n\t"
-        : : "r"(mout) : "memory"
+    asm volatile(R"(
+        vmxor.mm v3, v1, v2
+        vsm.v v3, (%0)
+    )" : : "r"(mout) : "memory"
     );
     check(mout[0] == (0xF0 ^ 0x3C), "vmxor.mm (mask XOR)");
 
     /* vmnand.mm */
-    asm volatile(
-        "vmnand.mm v3, v1, v2\n\t"
-        "vsm.v v3, (%0)\n\t"
-        : : "r"(mout) : "memory"
+    asm volatile(R"(
+        vmnand.mm v3, v1, v2
+        vsm.v v3, (%0)
+    )" : : "r"(mout) : "memory"
     );
     check(mout[0] == (uint8_t)~(0xF0 & 0x3C), "vmnand.mm (mask NAND)");
 
     /* vcpop.m - population count of mask */
     mask_buf[0] = 0xA5;  /* 10100101 => 4 bits set */
     long popcnt = 0;
-    asm volatile(
-        "vlm.v v0, (%1)\n\t"
-        "vcpop.m %0, v0\n\t"
-        : "=r"(popcnt) : "r"(mask_buf)
+    asm volatile(R"(
+        vlm.v v0, (%1)
+        vcpop.m %0, v0
+    )" : "=r"(popcnt) : "r"(mask_buf)
     );
     check(popcnt == 4, "vcpop.m (mask popcount of 0xA5 = 4)");
 
     /* vfirst.m - find first set bit */
     mask_buf[0] = 0x30;  /* 00110000 => first set at position 4 */
     long first = -1;
-    asm volatile(
-        "vlm.v v0, (%1)\n\t"
-        "vfirst.m %0, v0\n\t"
-        : "=r"(first) : "r"(mask_buf)
+    asm volatile(R"(
+        vlm.v v0, (%1)
+        vfirst.m %0, v0
+    )" : "=r"(first) : "r"(mask_buf)
     );
     check(first == 4, "vfirst.m (first set bit of 0x30 = position 4)");
 
     /* vid.v - vector of element indices */
     for (int i = 0; i < 8; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vid.v v1\n\t"
-        "vse32.v v1, (%1)\n\t"
-        : : "r"(8UL), "r"(c32) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vid.v v1
+        vse32.v v1, (%1)
+    )" : : "r"(8UL), "r"(c32) : "memory"
     );
     int ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1217,12 +1219,12 @@ static void test_mask_ops(void)
     /* viota.m - prefix sum of mask bits */
     mask_buf[0] = 0x55;  /* 01010101 - bits 0,2,4,6 are set */
     for (int i = 0; i < 8; i++) c32[i] = -1;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vlm.v v0, (%1)\n\t"
-        "viota.m v1, v0\n\t"
-        "vse32.v v1, (%2)\n\t"
-        : : "r"(8UL), "r"(mask_buf), "r"(c32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vlm.v v0, (%1)
+        viota.m v1, v0
+        vse32.v v1, (%2)
+    )" : : "r"(8UL), "r"(mask_buf), "r"(c32)
         : "memory"
     );
     /* viota result: [0,0,1,1,2,2,3,3] (count of set mask bits before each position) */
@@ -1245,12 +1247,12 @@ static void test_permutation(void)
     for (int i = 0; i < 8; i++) a32[i] = (i + 1) * 10;  /* 10,20,...,80 */
     int32_t idx32[8] = {7, 6, 5, 4, 3, 2, 1, 0};  /* reverse order */
     for (int i = 0; i < 8; i++) c32[i] = 0;
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"    /* data */
-        "vle32.v v2, (%1)\n\t"    /* indices (reverse) */
-        "vrgather.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(idx32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)  # data
+        vle32.v v2, (%1)  # indices (reverse)
+        vrgather.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(idx32), "r"(c32) : "memory"
     );
     int ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1259,10 +1261,10 @@ static void test_permutation(void)
 
     /* vrgather.vi - gather with immediate index (broadcast element) */
     for (int i = 0; i < 8; i++) c32[i] = 0;
-    asm volatile(
-        "vrgather.vi v3, v1, 2\n\t"   /* broadcast a32[2]=30 */
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(c32) : "memory"
+    asm volatile(R"(
+        vrgather.vi v3, v1, 2  # broadcast a32[2]=30
+        vse32.v v3, (%0)
+    )" : : "r"(c32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1271,12 +1273,12 @@ static void test_permutation(void)
 
     /* vslideup - slide elements up by offset */
     for (int i = 0; i < 8; i++) { a32[i] = i + 1; c32[i] = 0; }
-    asm volatile(
-        "vmv.v.i v3, 0\n\t"         /* clear destination */
-        "vle32.v v1, (%0)\n\t"
-        "vslideup.vi v3, v1, 2\n\t"  /* shift up by 2 */
-        "vse32.v v3, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vmv.v.i v3, 0  # clear destination
+        vle32.v v1, (%0)
+        vslideup.vi v3, v1, 2  # shift up by 2
+        vse32.v v3, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     /* c32[0..1] = 0, c32[2] = a32[0] = 1, c32[3] = a32[1] = 2, etc */
     check(c32[0] == 0 && c32[1] == 0 && c32[2] == 1 && c32[3] == 2,
@@ -1284,11 +1286,11 @@ static void test_permutation(void)
 
     /* vslidedown - slide elements down by offset */
     for (int i = 0; i < 8; i++) { a32[i] = (i + 1) * 10; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vslidedown.vi v3, v1, 3\n\t"
-        "vse32.v v3, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vslidedown.vi v3, v1, 3
+        vse32.v v3, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     /* c32[0] = a32[3] = 40, c32[1] = a32[4] = 50, ... */
     check(c32[0] == 40 && c32[1] == 50 && c32[2] == 60,
@@ -1296,22 +1298,22 @@ static void test_permutation(void)
 
     /* vslide1up - shift up by 1, inserting scalar at position 0 */
     for (int i = 0; i < 8; i++) { a32[i] = (i + 1) * 10; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vslide1up.vx v3, v1, %1\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(99L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vslide1up.vx v3, v1, %1
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(99L), "r"(c32) : "memory"
     );
     check(c32[0] == 99 && c32[1] == 10 && c32[2] == 20,
           "vslide1up.vx (insert 99 at front, shift right)");
 
     /* vslide1down - shift down by 1, inserting scalar at end */
     for (int i = 0; i < 8; i++) { a32[i] = (i + 1) * 10; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vslide1down.vx v3, v1, %1\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(88L), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vslide1down.vx v3, v1, %1
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(88L), "r"(c32) : "memory"
     );
     check(c32[0] == 20 && c32[1] == 30 && c32[vl - 1] == 88,
           "vslide1down.vx (shift left, insert 88 at end)");
@@ -1319,12 +1321,12 @@ static void test_permutation(void)
     /* vcompress - compress selected elements */
     for (int i = 0; i < 8; i++) { a32[i] = (i + 1) * 10; c32[i] = 0; }
     mask_buf[0] = 0x55;  /* select elements 0,2,4,6 */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vlm.v v0, (%2)\n\t"
-        "vcompress.vm v3, v1, v0\n\t"
-        "vse32.v v3, (%1)\n\t"
-        : : "r"(a32), "r"(c32), "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vlm.v v0, (%2)
+        vcompress.vm v3, v1, v0
+        vse32.v v3, (%1)
+    )" : : "r"(a32), "r"(c32), "r"(mask_buf) : "memory"
     );
     check(c32[0] == 10 && c32[1] == 30 && c32[2] == 50 && c32[3] == 70,
           "vcompress.vm (compress even-indexed elements)");
@@ -1344,13 +1346,13 @@ static void test_carry_borrow(void)
     /* vadc - add with carry from mask */
     for (int i = 0; i < 8; i++) { a32[i] = 100; b32[i] = 50; c32[i] = 0; }
     mask_buf[0] = 0xAA;  /* carry=1 for elements 1,3,5,7 */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vlm.v v0, (%3)\n\t"
-        "vadc.vvm v3, v1, v2, v0\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vlm.v v0, (%3)
+        vadc.vvm v3, v1, v2, v0
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
         : "memory"
     );
     int ok = 1;
@@ -1366,12 +1368,12 @@ static void test_carry_borrow(void)
         b32[i] = (i < 4) ? 1 : 0;
     }
     uint8_t carry_out[2] = {0};
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmadc.vv v3, v1, v2\n\t"
-        "vsm.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(carry_out) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vmadc.vv v3, v1, v2
+        vsm.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(carry_out) : "memory"
     );
     /* 0x7FFFFFFF + 1 = 0x80000000 - no unsigned carry, but signed overflow.
        vmadc works on unsigned carry, so 0x7FFFFFFF + 1 doesn't carry unsigned */
@@ -1379,12 +1381,12 @@ static void test_carry_borrow(void)
     for (int i = 0; i < 8; i++) u32[i] = (i < 4) ? 0xFFFFFFFFu : 0;
     for (int i = 0; i < 8; i++) b32[i] = (i < 4) ? 1 : 0;
     carry_out[0] = 0;
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmadc.vv v3, v1, v2\n\t"
-        "vsm.v v3, (%2)\n\t"
-        : : "r"(u32), "r"(b32), "r"(carry_out) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vmadc.vv v3, v1, v2
+        vsm.v v3, (%2)
+    )" : : "r"(u32), "r"(b32), "r"(carry_out) : "memory"
     );
     check((carry_out[0] & 0x0F) == 0x0F,
           "vmadc.vv (carry-out for 0xFFFFFFFF + 1)");
@@ -1392,13 +1394,13 @@ static void test_carry_borrow(void)
     /* vsbc - subtract with borrow from mask */
     for (int i = 0; i < 8; i++) { a32[i] = 200; b32[i] = 50; c32[i] = 0; }
     mask_buf[0] = 0x55;  /* borrow=1 for elements 0,2,4,6 */
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vlm.v v0, (%3)\n\t"
-        "vsbc.vvm v3, v1, v2, v0\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vlm.v v0, (%3)
+        vsbc.vvm v3, v1, v2, v0
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32), "r"(mask_buf)
         : "memory"
     );
     ok = 1;
@@ -1422,13 +1424,13 @@ static void test_fixed_point(void)
 
     /* vaadd - averaging add: (a + b + rounding) >> 1 */
     for (int i = 0; i < 8; i++) { a32[i] = 10; b32[i] = 21; c32[i] = 0; }
-    asm volatile(
-        "csrwi vxrm, 0\n\t"   /* rounding mode = round-to-nearest-up */
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vaadd.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32) : "memory"
+    asm volatile(R"(
+        csrwi vxrm, 0  # rounding mode = round-to-nearest-up
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vaadd.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32) : "memory"
     );
     /* (10 + 21 + 1) >> 1 = 16 with rnu, or (10+21)>>1 = 15 with rdn */
     check(c32[0] == 16 || c32[0] == 15,
@@ -1436,25 +1438,25 @@ static void test_fixed_point(void)
 
     /* vasub - averaging subtract */
     for (int i = 0; i < 8; i++) { a32[i] = 21; b32[i] = 10; c32[i] = 0; }
-    asm volatile(
-        "csrwi vxrm, 2\n\t"   /* rounding mode = round-down (truncate) */
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vasub.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32) : "memory"
+    asm volatile(R"(
+        csrwi vxrm, 2  # rounding mode = round-down (truncate)
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vasub.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32) : "memory"
     );
     /* (21 - 10) >> 1 = 5 (truncated) */
     check(c32[0] == 5, "vasub.vv (averaging subtract, truncated)");
 
     /* vssub - saturating subtract */
     for (int i = 0; i < 8; i++) { a32[i] = (int32_t)0x80000000; b32[i] = 1; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vssub.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(a32), "r"(b32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vssub.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(a32), "r"(b32), "r"(c32) : "memory"
     );
     check(c32[0] == (int32_t)0x80000000,
           "vssub.vv (saturating subtract clamps to INT32_MIN)");
@@ -1478,13 +1480,13 @@ static void test_fp_arith(void)
     }
 
     /* vfadd */
-    asm volatile(
-        "vsetvli %0, %1, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%2)\n\t"
-        "vle32.v v2, (%3)\n\t"
-        "vfadd.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%4)\n\t"
-        : "=r"(vl)
+    asm volatile(R"(
+        vsetvli %0, %1, e32, m1, ta, ma
+        vle32.v v1, (%2)
+        vle32.v v2, (%3)
+        vfadd.vv v3, v1, v2
+        vse32.v v3, (%4)
+    )" : "=r"(vl)
         : "r"(8UL), "r"(fa32), "r"(fb32), "r"(fc32)
         : "memory"
     );
@@ -1496,10 +1498,10 @@ static void test_fp_arith(void)
     check(ok, "vfadd.vv (FP32 vector add)");
 
     /* vfsub */
-    asm volatile(
-        "vfsub.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(fc32) : "memory"
+    asm volatile(R"(
+        vfsub.vv v3, v1, v2
+        vse32.v v3, (%0)
+    )" : : "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -1510,12 +1512,12 @@ static void test_fp_arith(void)
 
     /* vfmul */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)(i + 1); fb32[i] = 3.0f; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vfmul.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vfmul.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1524,12 +1526,12 @@ static void test_fp_arith(void)
 
     /* vfdiv */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)((i + 1) * 12); fb32[i] = 4.0f; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vfdiv.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vfdiv.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1538,11 +1540,11 @@ static void test_fp_arith(void)
 
     /* vfsqrt */
     for (int i = 0; i < 8; i++) fa32[i] = (float)((i + 1) * (i + 1));
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vfsqrt.v v2, v1\n\t"
-        "vse32.v v2, (%1)\n\t"
-        : : "r"(fa32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vfsqrt.v v2, v1
+        vse32.v v2, (%1)
+    )" : : "r"(fa32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1555,13 +1557,13 @@ static void test_fp_arith(void)
         fb32[i] = 2.0f;             /* vs1 */
         fc32[i] = 10.0f;            /* vd (accumulator) */
     }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vle32.v v3, (%2)\n\t"
-        "vfmacc.vv v3, v2, v1\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vle32.v v3, (%2)
+        vfmacc.vv v3, v2, v1
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1574,13 +1576,13 @@ static void test_fp_arith(void)
         fb32[i] = 2.0f;
         fc32[i] = 5.0f;
     }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vle32.v v3, (%2)\n\t"
-        "vfnmacc.vv v3, v2, v1\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vle32.v v3, (%2)
+        vfnmacc.vv v3, v2, v1
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -1595,13 +1597,13 @@ static void test_fp_arith(void)
         fb32[i] = 10.0f;
         fc32[i] = 3.0f;
     }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vle32.v v3, (%2)\n\t"
-        "vfmsac.vv v3, v2, v1\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vle32.v v3, (%2)
+        vfmsac.vv v3, v2, v1
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++) {
@@ -1616,13 +1618,13 @@ static void test_fp_arith(void)
         fb64[i] = (double)(i + 1) * 0.75;
         fc64[i] = 0.0;
     }
-    asm volatile(
-        "vsetvli zero, %0, e64, m1, ta, ma\n\t"
-        "vle64.v v1, (%1)\n\t"
-        "vle64.v v2, (%2)\n\t"
-        "vfadd.vv v3, v1, v2\n\t"
-        "vse64.v v3, (%3)\n\t"
-        : : "r"(4UL), "r"(fa64), "r"(fb64), "r"(fc64)
+    asm volatile(R"(
+        vsetvli zero, %0, e64, m1, ta, ma
+        vle64.v v1, (%1)
+        vle64.v v2, (%2)
+        vfadd.vv v3, v1, v2
+        vse64.v v3, (%3)
+    )" : : "r"(4UL), "r"(fa64), "r"(fb64), "r"(fc64)
         : "memory"
     );
     ok = 1;
@@ -1635,12 +1637,12 @@ static void test_fp_arith(void)
     /* vfadd.vf - add scalar */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)i; fc32[i] = 0.0f; }
     double scalar = 100.0;
-    asm volatile(
-        "vsetvli zero, %0, e64, m1, ta, ma\n\t"
-        "vle64.v v1, (%1)\n\t"
-        "vfadd.vf v2, v1, %2\n\t"
-        "vse64.v v2, (%3)\n\t"
-        : : "r"(4UL), "r"(fa64), "f"(scalar), "r"(fc64)
+    asm volatile(R"(
+        vsetvli zero, %0, e64, m1, ta, ma
+        vle64.v v1, (%1)
+        vfadd.vf v2, v1, %2
+        vse64.v v2, (%3)
+    )" : : "r"(4UL), "r"(fa64), "f"(scalar), "r"(fc64)
         : "memory"
     );
     ok = 1;
@@ -1651,12 +1653,12 @@ static void test_fp_arith(void)
     /* vfmul.vf - multiply by scalar */
     for (int i = 0; i < 4; i++) { fa64[i] = (double)(i + 1); fc64[i] = 0.0; }
     double mul_scalar = 2.5;
-    asm volatile(
-        "vsetvli zero, %0, e64, m1, ta, ma\n\t"
-        "vle64.v v1, (%1)\n\t"
-        "vfmul.vf v2, v1, %2\n\t"
-        "vse64.v v2, (%3)\n\t"
-        : : "r"(4UL), "r"(fa64), "f"(mul_scalar), "r"(fc64)
+    asm volatile(R"(
+        vsetvli zero, %0, e64, m1, ta, ma
+        vle64.v v1, (%1)
+        vfmul.vf v2, v1, %2
+        vse64.v v2, (%3)
+    )" : : "r"(4UL), "r"(fa64), "f"(mul_scalar), "r"(fc64)
         : "memory"
     );
     ok = 1;
@@ -1682,12 +1684,12 @@ static void test_fp_compare(void)
         fb32[i] = (i == 3 || i == 5) ? (float)i : (float)(i + 1);
     }
     mask_buf[0] = 0;
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmfeq.vv v0, v1, v2\n\t"
-        "vsm.v v0, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vmfeq.vv v0, v1, v2
+        vsm.v v0, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(mask_buf) : "memory"
     );
     check((mask_buf[0] & (1 << 3)) && (mask_buf[0] & (1 << 5)),
           "vmfeq.vv (FP equal comparison)");
@@ -1695,12 +1697,12 @@ static void test_fp_compare(void)
     /* vmflt - FP less than */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)i; fb32[i] = 4.0f; }
     mask_buf[0] = 0;
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmflt.vv v0, v1, v2\n\t"
-        "vsm.v v0, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(mask_buf) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vmflt.vv v0, v1, v2
+        vsm.v v0, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(mask_buf) : "memory"
     );
     check(mask_buf[0] == 0x0F, "vmflt.vv (FP less-than: elements 0-3)");
 
@@ -1709,14 +1711,14 @@ static void test_fp_compare(void)
         fa32[i] = (float)(i - 4);  /* -4, -3, ..., 3 */
         fb32[i] = 0.0f;
     }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vfmin.vv v3, v1, v2\n\t"
-        "vfmax.vv v4, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        "vse32.v v4, (%3)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32), "r"(fc32 + 8)
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vfmin.vv v3, v1, v2
+        vfmax.vv v4, v1, v2
+        vse32.v v3, (%2)
+        vse32.v v4, (%3)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32), "r"(fc32 + 8)
         : "memory"
     );
     int ok = 1;
@@ -1729,12 +1731,12 @@ static void test_fp_compare(void)
 
     /* vfsgnj - sign injection (copy sign of second operand) */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)(i + 1); fb32[i] = -1.0f; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vfsgnj.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vfsgnj.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1742,10 +1744,10 @@ static void test_fp_compare(void)
     check(ok, "vfsgnj.vv (sign injection -> negate all)");
 
     /* vfsgnjn - negated sign injection (negate sign of second) -> abs */
-    asm volatile(
-        "vfsgnjn.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(fc32) : "memory"
+    asm volatile(R"(
+        vfsgnjn.vv v3, v1, v2
+        vse32.v v3, (%0)
+    )" : : "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1754,12 +1756,12 @@ static void test_fp_compare(void)
 
     /* vfsgnjx - XOR sign injection (flip sign) -> negate */
     for (int i = 0; i < 8; i++) { fa32[i] = (float)(i + 1); fb32[i] = -1.0f; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vfsgnjx.vv v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vle32.v v2, (%1)
+        vfsgnjx.vv v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(fa32), "r"(fb32), "r"(fc32) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1777,12 +1779,12 @@ static void test_fp_compare(void)
     /* vfclass returns a bitmask: bit i set means class i */
     uint32_t class_results[8];
     for (int i = 0; i < 8; i++) class_results[i] = 0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vfclass.v v2, v1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(6UL), "r"(fa32), "r"(class_results) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vfclass.v v2, v1
+        vse32.v v2, (%2)
+    )" : : "r"(6UL), "r"(fa32), "r"(class_results) : "memory"
     );
     check(class_results[0] == 1      /* -inf = bit 0 */
        && class_results[3] == 16     /* +zero = bit 4 */
@@ -1803,12 +1805,12 @@ static void test_fp_convert(void)
     /* vfcvt.x.f.v - FP to integer (round toward zero) */
     for (int i = 0; i < 8; i++) fa32[i] = (float)(i + 1) * 1.7f;
     for (int i = 0; i < 8; i++) c32[i] = 0;
-    asm volatile(
-        "vsetvli %0, %1, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%2)\n\t"
-        "vfcvt.rtz.x.f.v v2, v1\n\t"
-        "vse32.v v2, (%3)\n\t"
-        : "=r"(vl) : "r"(8UL), "r"(fa32), "r"(c32)
+    asm volatile(R"(
+        vsetvli %0, %1, e32, m1, ta, ma
+        vle32.v v1, (%2)
+        vfcvt.rtz.x.f.v v2, v1
+        vse32.v v2, (%3)
+    )" : "=r"(vl) : "r"(8UL), "r"(fa32), "r"(c32)
         : "memory"
     );
     int ok = 1;
@@ -1820,12 +1822,12 @@ static void test_fp_convert(void)
 
     /* vfcvt.f.x.v - integer to FP */
     for (int i = 0; i < 8; i++) a32[i] = (i + 1) * 7;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vfcvt.f.x.v v2, v1\n\t"
-        "vse32.v v2, (%2)\n\t"
-        : : "r"(8UL), "r"(a32), "r"(fc32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vfcvt.f.x.v v2, v1
+        vse32.v v2, (%2)
+    )" : : "r"(8UL), "r"(a32), "r"(fc32)
         : "memory"
     );
     ok = 1;
@@ -1836,13 +1838,13 @@ static void test_fp_convert(void)
     /* vfwcvt - widening convert float32 to float64 */
     for (int i = 0; i < 4; i++) fa32[i] = (float)(i + 1) * 1.5f;
     for (int i = 0; i < 4; i++) fc64[i] = 0.0;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vfwcvt.f.f.v v2, v1\n\t"     /* f32 -> f64, result in v2-v3 */
-        "vsetvli zero, %0, e64, m2, ta, ma\n\t"
-        "vse64.v v2, (%2)\n\t"
-        : : "r"(4UL), "r"(fa32), "r"(fc64) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vfwcvt.f.f.v v2, v1  # f32 -> f64, result in v2-v3
+        vsetvli zero, %0, e64, m2, ta, ma
+        vse64.v v2, (%2)
+    )" : : "r"(4UL), "r"(fa32), "r"(fc64) : "memory"
     );
     ok = 1;
     for (int i = 0; i < 4; i++)
@@ -1852,12 +1854,12 @@ static void test_fp_convert(void)
     /* vfncvt - narrowing convert float64 to float32 */
     for (int i = 0; i < 4; i++) fa64[i] = (double)(i + 1) * 2.5;
     for (int i = 0; i < 8; i++) fc32[i] = 0.0f;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle64.v v2, (%1)\n\t"
-        "vfncvt.f.f.w v1, v2\n\t"
-        "vse32.v v1, (%2)\n\t"
-        : : "r"(4UL), "r"(fa64), "r"(fc32)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle64.v v2, (%1)
+        vfncvt.f.f.w v1, v2
+        vse32.v v1, (%2)
+    )" : : "r"(4UL), "r"(fa64), "r"(fc32)
         : "memory"
     );
     ok = 1;
@@ -1877,23 +1879,23 @@ static void test_fp_reductions(void)
     /* vfredusum - unordered FP sum reduction */
     for (int i = 0; i < 8; i++) fa32[i] = (float)(i + 1);
     float fsum_result = 0.0f;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vmv.v.x v2, zero\n\t"    /* init scalar element to 0 */
-        "vfredusum.vs v3, v1, v2\n\t"
-        "vse32.v v3, (%2)\n\t"
-        : : "r"(8UL), "r"(fa32), "r"(&fsum_result)
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vmv.v.x v2, zero  # init scalar element to 0
+        vfredusum.vs v3, v1, v2
+        vse32.v v3, (%2)
+    )" : : "r"(8UL), "r"(fa32), "r"(&fsum_result)
         : "memory"
     );
     check(fsum_result == 36.0f, "vfredusum.vs (FP sum 1+2+...+8 = 36)");
 
     /* vfredosum - ordered FP sum reduction */
     fsum_result = 0.0f;
-    asm volatile(
-        "vfredosum.vs v3, v1, v2\n\t"
-        "vse32.v v3, (%0)\n\t"
-        : : "r"(&fsum_result)
+    asm volatile(R"(
+        vfredosum.vs v3, v1, v2
+        vse32.v v3, (%0)
+    )" : : "r"(&fsum_result)
         : "memory"
     );
     check(fsum_result == 36.0f, "vfredosum.vs (ordered FP sum = 36)");
@@ -1902,16 +1904,16 @@ static void test_fp_reductions(void)
     for (int i = 0; i < 8; i++) fa32[i] = (float)(i - 3);  /* -3..4 */
     float fmin_result, fmax_result;
     float big = 1e10f, small = -1e10f;
-    asm volatile(
-        "vsetvli zero, %0, e32, m1, ta, ma\n\t"
-        "vle32.v v1, (%1)\n\t"
-        "vfmv.v.f v4, %4\n\t"
-        "vfredmin.vs v5, v1, v4\n\t"
-        "vse32.v v5, (%2)\n\t"
-        "vfmv.v.f v4, %5\n\t"
-        "vfredmax.vs v5, v1, v4\n\t"
-        "vse32.v v5, (%3)\n\t"
-        : : "r"(8UL), "r"(fa32), "r"(&fmin_result), "r"(&fmax_result),
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m1, ta, ma
+        vle32.v v1, (%1)
+        vfmv.v.f v4, %4
+        vfredmin.vs v5, v1, v4
+        vse32.v v5, (%2)
+        vfmv.v.f v4, %5
+        vfredmax.vs v5, v1, v4
+        vse32.v v5, (%3)
+    )" : : "r"(8UL), "r"(fa32), "r"(&fmin_result), "r"(&fmax_result),
             "f"(big), "f"(small)
         : "memory"
     );
@@ -1931,11 +1933,11 @@ static void test_whole_reg_move(void)
     asm volatile("vsetvli %0, %1, e32, m1, ta, ma" : "=r"(vl) : "r"(8UL));
 
     for (int i = 0; i < 8; i++) { a32[i] = (i + 1) * 11; c32[i] = 0; }
-    asm volatile(
-        "vle32.v v1, (%0)\n\t"
-        "vmv1r.v v5, v1\n\t"      /* copy v1 -> v5 */
-        "vse32.v v5, (%1)\n\t"
-        : : "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vle32.v v1, (%0)
+        vmv1r.v v5, v1  # copy v1 -> v5
+        vse32.v v5, (%1)
+    )" : : "r"(a32), "r"(c32) : "memory"
     );
     int ok = 1;
     for (int i = 0; i < 8; i++)
@@ -1944,12 +1946,12 @@ static void test_whole_reg_move(void)
 
     /* vmv2r.v - copy 2 registers */
     for (int i = 0; i < 16; i++) { a32[i] = i * 5; c32[i] = 0; }
-    asm volatile(
-        "vsetvli zero, %0, e32, m2, ta, ma\n\t"
-        "vle32.v v2, (%1)\n\t"
-        "vmv2r.v v6, v2\n\t"
-        "vse32.v v6, (%2)\n\t"
-        : : "r"(16UL), "r"(a32), "r"(c32) : "memory"
+    asm volatile(R"(
+        vsetvli zero, %0, e32, m2, ta, ma
+        vle32.v v2, (%1)
+        vmv2r.v v6, v2
+        vse32.v v6, (%2)
+    )" : : "r"(16UL), "r"(a32), "r"(c32) : "memory"
     );
     unsigned long vl2;
     asm volatile("vsetvli %0, %1, e32, m2, ta, ma" : "=r"(vl2) : "r"(16UL));
@@ -1966,13 +1968,13 @@ static void test_whole_reg_move(void)
 /* Naked assembly entry: set up stack and enable FP/Vector before any C code */
 void __attribute__((naked, section(".text.init"))) _start(void)
 {
-    asm volatile(
-        /* Enable FP (mstatus.FS=01, bits 14:13) and Vector (mstatus.VS=01, bits 10:9) */
-        "li   t0, 0x6600\n\t"   /* FS=Dirty(11), VS=Dirty(11) */
-        "csrs mstatus, t0\n\t"
-        "la   sp, _stack_top\n\t"
-        "j    _main\n\t"
-    );
+        // Enable FP (mstatus.FS=01, bits 14:13) and Vector (mstatus.VS=01, bits 10:9)
+    asm volatile(R"(
+        li   t0, 0x6600  # FS=Dirty(11), VS=Dirty(11)
+        csrs mstatus, t0
+        la   sp, _stack_top
+        j    _main
+    )");
 }
 
 void _main(void)
@@ -2020,3 +2022,5 @@ void _main(void)
 
     htif_exit(tests_failed);
 }
+
+} // extern "C"

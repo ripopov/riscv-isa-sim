@@ -10,12 +10,12 @@ BUILD_DIR="$ROOT_DIR/build"
 OUTPUT_DIR="$SCRIPT_DIR"
 
 # Files
-SOURCE_FILE="$SCRIPT_DIR/vector_demo.c"
+SOURCE_FILE="$SCRIPT_DIR/vector_demo.cpp"
 LINKER_SCRIPT="$SCRIPT_DIR/baremetal.ld"
 OUTPUT_ELF="$OUTPUT_DIR/vector_demo.elf"
 SPIKE_BIN="$BUILD_DIR/spike"
 
-echo "=== Compiling vector_demo.c ==="
+echo "=== Compiling vector_demo.cpp ==="
 echo "Source: $SOURCE_FILE"
 echo "Linker script: $LINKER_SCRIPT"
 echo "Output: $OUTPUT_ELF"
@@ -28,7 +28,7 @@ echo "Output: $OUTPUT_ELF"
 # -nostartfiles: no crt0
 # -T: use custom linker script
 # -static: static linking
-riscv64-unknown-elf-gcc \
+riscv64-unknown-elf-g++ \
     -march=rv64gcv_zvl256b \
     -mabi=lp64d \
     -nostdlib \

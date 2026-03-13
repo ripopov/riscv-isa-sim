@@ -9,7 +9,7 @@ Covers **111 tests** across **19 instruction categories**.
 ./run_vector.sh
 ```
 
-Requires `riscv64-unknown-elf-gcc` and a built Spike (`../../build/spike`).
+Requires `riscv64-unknown-elf-g++` and a built Spike (`../../build/spike`).
 
 ## What's Covered
 
