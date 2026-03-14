@@ -57,9 +57,14 @@ echo "Simulator: $SPIKE_BIN"
 # --isa=rv64gcv_zvl256b: RV64 with G+C+V extensions, VLEN >= 256 bits
 # This gives VL=8 for e32/m1, which matches the test expectations.
 # The zvl256b extension guarantees a minimum vector register length of 256 bits.
-OUTPUT=$("$SPIKE_BIN" --isa=rv64gcv_zvl256b "$OUTPUT_ELF" 2>&1)
+# -l: generate instruction execution log (to stderr)
+# --log-commits: include register/memory changes in the log
+TRACE_FILE="$OUTPUT_DIR/vector_demo_trace.log"
+OUTPUT=$("$SPIKE_BIN" -l --log-commits --log="$TRACE_FILE" --isa=rv64gcv_zvl256b "$OUTPUT_ELF" 2>&1)
 
 echo "$OUTPUT"
+echo ""
+echo "Instruction trace saved to: $TRACE_FILE"
 echo ""
 
 echo "=== Verifying Output ==="
