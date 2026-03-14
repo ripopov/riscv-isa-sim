@@ -8,3 +8,8 @@ autom4te.cache/
 .#*
 *~
 config.log
+.idea/
+examples/**/*.elf
+examples/**/*.dis
+examples/**/*_trace.log
+examples/**/*_commit.log
