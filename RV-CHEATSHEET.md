@@ -202,4 +202,14 @@ Label can be used in place of branch immediate, for example: `beq t0, t1, label_
 | rdinstret  | CPU Instructions Retired (p)       | rdinstret rd      | rd = csr_instret[31:0]  |
 | rdinstreth | CPU Instructions Retired High (p)  | rdinstreth rd     | rd = csr_instret[63:32] |
 
+**Misc Instructions**
+
+| Instr  | Description                         | Use        | Result   |
+|--------|-------------------------------------|------------|----------|
+| ebreak | Environment Break ( Debugger Call ) | ebreak     | -        |
+| ecall  | Environment Call ( OS Function )    | ecall      | -        |
+| fence  | I/O Ordering                        | fence      | -        |
+| mv     | Copy Register (p)                   | mv rd, rs1 | rd = rs1 |
+| nop    | No Operation (p)                    | nop        | -        |
+
 
