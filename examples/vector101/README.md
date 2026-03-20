@@ -6,7 +6,7 @@ This example is intentionally narrow:
 
 - no C or C++
 - no terminal output
-- one short sequence of 27 documented instructions
+- one short sequence of 22 documented instructions
 - verification based on Spike's instruction trace and register dumps
 
 ## Files
@@ -128,6 +128,119 @@ csrs    mstatus, t0       # set bits → both fields become Dirty (enabled)
 The `csrs` (CSR Set) instruction ORs the mask into `mstatus`, turning on FS and
 VS without disturbing other fields.  After this point the hart accepts both
 floating-point and vector instructions.
+
+## Loading Addresses with `la` (the `auipc`+`addi` Pattern)
+
+Throughout the program you will see lines like:
+
+```asm
+la      sp, _stack_top
+la      a1, input_a
+```
+
+`la` (Load Address) is a **pseudo-instruction** — it is not a real RISC-V
+hardware instruction.  The assembler silently expands each `la` into a pair of
+real instructions.  Understanding this expansion is important because it reveals
+how RISC-V handles a fundamental constraint: every instruction is exactly 32
+bits wide, but a full memory address can be 32 or 64 bits.  There is simply no
+room to embed a complete address inside a single instruction.
+
+### The problem
+
+Suppose the label `_stack_top` lives at address `0x8000_1234`.  You need to get
+that value into the `sp` register.  A single 32-bit instruction cannot carry all
+32 (let alone 64) address bits as an immediate operand — some bits are consumed
+by the opcode, the destination register number, and other encoding fields.
+
+### The solution: split the address into two halves
+
+RISC-V solves this with a two-step approach.  The assembler rewrites every `la`
+into:
+
+```asm
+auipc   sp, %pcrel_hi(_stack_top)   # step 1: upper 20 bits
+addi    sp, sp, %pcrel_lo(label)     # step 2: lower 12 bits
+```
+
+Together the two instructions reconstruct the full **absolute** address of the
+symbol.  The *mechanism* used to get there is called *PC-relative addressing*
+because the offset encoded in the instructions is measured from the current
+program counter (PC) — but the **end result in the register is an absolute
+address** (absolute PC + fixed offset = absolute target address).
+
+You might wonder: "the PC changes every instruction — how can this work?"  The
+answer is that each `auipc` only reads **its own** PC at the moment **it**
+executes.  The linker already knows the exact distance from that specific
+`auipc` instruction to the target symbol, so it bakes the right offset into the
+instruction bits at link time.  It does not matter that the PC was different one
+instruction earlier or will be different one instruction later.
+
+### Step-by-step walkthrough
+
+#### Step 1 — `auipc` (Add Upper Immediate to PC)
+
+`auipc rd, imm20` does the following:
+
+1. Take the 20-bit immediate (`imm20`).
+2. Shift it left by 12 positions to form a 32-bit value with 12 zero bits at
+   the bottom.
+3. Add the current PC.
+4. Write the result into the destination register.
+
+After this single instruction the register holds an address that is accurate to
+within ±2048 bytes of the target (because the bottom 12 bits are still missing).
+
+```
+rd = PC + (imm20 << 12)
+```
+
+The `%pcrel_hi(symbol)` relocation tells the linker to compute the upper 20 bits
+of the signed offset from the `auipc` site to the symbol.
+
+#### Step 2 — `addi` (Add Immediate)
+
+`addi rd, rd, imm12` simply adds the remaining 12-bit signed offset:
+
+```
+rd = rd + sign_extend(imm12)
+```
+
+The `%pcrel_lo(label)` relocation tells the linker to fill in the low 12 bits of
+the same offset that was started by the `auipc` at `label`.
+
+After both instructions execute, the register contains the exact runtime address
+of the symbol.
+
+### Concrete numeric example
+
+Assume the `auipc` sits at address `0x8000_0000` and the target symbol is at
+`0x8000_1234`:
+
+| Step | Instruction | Computation | Register value |
+|------|-------------|-------------|----------------|
+| 1 | `auipc sp, 0x1` | `0x8000_0000 + (0x1 << 12)` | `0x8000_1000` |
+| 2 | `addi sp, sp, 0x234` | `0x8000_1000 + 0x234` | `0x8000_1234` |
+
+The offset from PC to symbol is `0x1234`.  The linker splits it:
+
+- Upper 20 bits → `0x1` (used by `auipc`)
+- Lower 12 bits → `0x234` (used by `addi`)
+
+### Why PC-relative instead of absolute?
+
+Position-independent code (PIC) never embeds fixed addresses — it always
+computes addresses relative to where the code is currently running.  This means
+the same binary works correctly no matter where it is loaded in memory.  Even in
+a bare-metal program like this one, PC-relative addressing is the default
+because it keeps the code simple and relocatable.
+
+### Why not just use `la` everywhere?
+
+You can — and this example does.  Writing the raw `auipc`/`addi` pair by hand is
+only necessary when you need fine-grained control (for example, sharing one
+`auipc` across multiple nearby `addi`/`lw`/`sw` instructions to save code
+size).  For most code the `la` pseudo-instruction is clearer and the assembler
+handles the details.
 
 ## Usage
 
