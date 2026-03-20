@@ -33,7 +33,7 @@ echo "=== Disassembling ELF ==="
 riscv64-unknown-elf-objdump -d "$OUTPUT_ELF" > "$DISASM_FILE"
 
 echo "=== Running on Spike (with instruction trace) ==="
-"$SPIKE_BIN" --isa=rv64gc -l --log-commits --log="$TRACE_FILE" "$OUTPUT_ELF"
+"$SPIKE_BIN" --isa=rv64gc --instructions=10000 -l --log-commits --log="$TRACE_FILE" "$OUTPUT_ELF"
 
 echo "=== SUCCESS: Program exited normally ==="
 echo ""

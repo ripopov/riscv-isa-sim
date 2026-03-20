@@ -20,6 +20,12 @@
     .globl _start
 
 _start:
+    # 0. Install trap handler so unexpected exceptions exit with failure.
+    la      t0, trap_handler
+    csrw    mtvec, t0
+
+    rdcycle t0
+
     # 1. Set up the stack pointer using PC-relative addressing.
 1:  auipc   sp, %pcrel_hi(_stack_top)
     addi    sp, sp, %pcrel_lo(1b)
@@ -58,6 +64,22 @@ _start:
 hang:
     # 8. Loop forever waiting for host to observe exit.
     j       hang
+
+#
+# trap_handler: catch unexpected exceptions and exit with failure.
+#
+# mtvec requires the handler address to be aligned to a 4-byte boundary.
+# .align 2 means 2^2 = 4-byte alignment, satisfying that requirement.
+#
+    .align  2
+trap_handler:
+    la      t0, tohost
+    # HTIF exit protocol: tohost = (exit_code << 1) | 1.
+    # exit_code 0 = success (tohost=1), exit_code 1 = failure (tohost=3).
+    li      t1, 3
+    sd      t1, 0(t0)           # Write failure code to HTIF tohost register.
+                                # Spike polls tohost and terminates the simulation.
+1:  j       1b                  # Spin until Spike observes tohost and shuts down.
 
 #
 # compute_sum(int a, int b) -> int
