@@ -1,16 +1,76 @@
 # Spike throughput on RVA22 — Linux boot and CoreMark
 
 Two benchmarks, both built for the **RVA22** profile, that bracket Spike's
-interpreter from opposite ends:
+interpreter from opposite ends.
 
-* **Linux boot** — boots a RISC-V 64 kernel, runs `ls`, powers off. Megabytes of
-  hot text, S-mode paging, constant TLB and instruction-cache invalidation. This
-  is the workload the optimization log below is written against.
-* **CoreMark** — bare metal, M-mode, no paging, a working set of a few kilobytes.
-  Almost pure fetch-dispatch-execute.
+## Results
 
-Both report end-to-end wall clock and simulator throughput (MIPS) from Spike's
-own `--stats`.
+| benchmark | what it exercises | instructions | wall clock | throughput |
+|---|---|---|---|---|
+| **Linux/RVA22 boot + `ls`** | S-mode, Sv39 paging, megabytes of kernel text, constant TLB and I-cache invalidation | 116 152 768 | 0.394 s | **295 MIPS** |
+| **CoreMark, bare metal** | M-mode, no paging, ~15 KB working set — almost pure fetch-dispatch-execute | 1 585 865 000 | 2.125 s | **746 MIPS** |
+
+Host: Intel Core Ultra 7 265K (20 cores), Ubuntu 25.10, GCC 15.2.0. Spike
+1.1.1-dev @ `c09c0cce` + the changes in this tree. Means of 7–12 consecutive
+runs on an otherwise idle machine; run-to-run spread is under 2 % idle and
+about 5 % on a busy desktop, so the two figures above were taken back to back.
+
+Both come from Spike's own `--stats`: a monotonic per-hart retired-instruction
+counter that the target cannot write, and wall clock measured from the top of
+`main()`, so building the machine and loading the payload are included. MIPS is
+one divided by the other.
+
+## Why CoreMark is 2.5x faster
+
+The interesting thing about the gap is that it is mostly *not* extra work. Host
+nanoseconds per retired target instruction, split by where the profiler found
+the time (gperftools, 9408 and 12704 samples):
+
+| where the time goes | Linux boot | CoreMark |
+|---|---|---|
+| instruction handlers | 1.77 ns | 0.96 ns |
+| dispatch loop (`processor_t::step`) | 1.00 ns | 0.37 ns |
+| startup / teardown — build machine, load the 25 MB payload, release memory | 0.30 ns | 0.00 ns |
+| MMU, page walks, device I/O | 0.22 ns | 0.00 ns |
+| CSR access | 0.08 ns | 0.00 ns |
+| other | 0.03 ns | 0.00 ns |
+| **total** | **3.39 ns** | **1.34 ns** |
+
+Only **0.62 ns of the 2.05 ns difference** is code CoreMark never executes — the
+MMU, the CSRs, and the fixed cost of starting a big simulation. The other
+**1.43 ns, 70 % of the gap, is the same dispatch loop and the same handlers
+running 2.7x and 1.8x slower.** Four reasons, in rough order of size:
+
+* **The instruction cache stops working.** The boot performs 5.54 M I-cache
+  refills over 116 M instructions — one every 21 — because 22 462 `sfence.vma`
+  and 10 937 `fence.i` keep throwing entries away and the kernel's hot text is
+  megabytes wide. The CoreMark image contains **no `fence.i`, no `sfence.vma`
+  and no `misa` write at all** — its only CSR write is the `mstatus.FS` in the
+  startup code, which `base_status_csr_t::maybe_flush_tlb` correctly ignores —
+  so `flush_icache()` never runs after reset. With 13 210 bytes of text the
+  entire run can refill at most 6 605 times, one per 240 000 instructions. That
+  is the dispatch-loop row: same code, but in the boot it is a fetch and a
+  re-decode where in CoreMark it is a tag hit.
+* **The working set does not fit in the host's caches.** The boot touches about
+  70 MiB of target memory (95 MiB peak RSS against CoreMark's 25 MiB, 9 MiB of
+  which is Spike's own instruction cache and its fill list). CoreMark's entire
+  state is 2 KB of benchmark data and 13 KB of text, resident in the host's L1
+  for the whole run — so a target load that is a host cache miss in the boot is
+  a hit in CoreMark. That is the handler row.
+* **Address translation.** The boot runs S-mode under Sv39: every fetch, load
+  and store probes a TLB, and a miss costs a page walk plus a PMP check.
+  CoreMark runs M-mode with paging off, where translation is the identity — the
+  MMU row is zero, and the TLB probe inlined into every handler always hits.
+* **Traps.** Timer interrupts, SBI `ecall`s and page faults each break out of
+  the fast dispatch batch and take the slow path through `step()`. CoreMark
+  takes none for its entire run.
+
+The corollary is in *None of the optimization work shows up on CoreMark* below:
+everything in the optimization log attacks the first three items, so it doubles
+the boot and does nothing at all for CoreMark. 1.34 ns per target instruction —
+about 7 host cycles at this machine's clock — is roughly what this interpreter
+costs when nothing is in its way, and closing that further means changing how
+dispatch works, not what it does.
 
 ## Repro
 
@@ -39,7 +99,9 @@ Or step by step:
 | `./05-coremark.sh` | bare-metal CoreMark image → `out/coremark.elf` |
 | `./06-coremark-bench.sh` | runs CoreMark on Spike, prints instructions / sim time / MIPS |
 
-## Configuration — Linux boot
+## Linux boot
+
+### Configuration
 
 * **RVA22U64 (user)** — `rv64imafdc_zicsr_zifencei_zicntr_zihpm_zihintpause_zfhmin_zba_zbb_zbs_zicbom_zicbop_zicboz_zkt`
 * **RVA22S64 (Spike)** — the above `+ svpbmt svinval svnapot`, `--priv=MSU`, Sv39, 1 GiB RAM, 1 hart
@@ -63,10 +125,9 @@ zicbom_zicbop_zicboz_zkt_svpbmt_svinval_svnapot \
       --dtb=out/spike-rva22.dtb out/fw_payload.elf
 ```
 
-## Results — Linux boot
+### Results
 
-Host: Intel Core Ultra 7 265K (20 cores), Ubuntu 25.10, GCC 15.2.0.
-Spike 1.1.1-dev @ `c09c0cce` + local changes. 12 consecutive runs.
+12 consecutive runs.
 
 | metric | value |
 |---|---|
@@ -74,13 +135,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 12 consecutive runs.
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
 | simulation throughput | **295 MIPS** mean, 299 MIPS best |
 | peak RSS | 95 MiB |
-| of which: build the machine + load the 25 MB ELF | ≈0.02 s (≈5 %) |
+| of which: build the machine, load the 25 MB ELF, release memory at exit | ≈9 % of the run, by profile attribution |
 
-Both numbers come from Spike's own `--stats`. The instruction count is a
-monotonic per-hart retired-instruction counter, covering OpenSBI + the whole
-kernel boot + `ls`; the time is measured from the top of `main()`, so building
-the machine and loading the payload are included. MIPS is one divided by the
-other.
+The instruction count covers OpenSBI + the whole kernel boot + `ls`.
 
 Artifacts: `out/Image` (24 MB, initramfs linked in), `out/fw_payload.elf` (25 MB),
 `out/spike-rva22.dtb`, boot log in `out/run.log`.
@@ -121,14 +178,14 @@ spike --stats --isa=<RVA22 string> out/coremark.elf
 
 ### Results
 
-Same host and Spike build as above, seven consecutive runs.
+Seven consecutive runs.
 
 | metric | value |
 |---|---|
 | wall clock, process start → HTIF exit | **2.125 s** mean (2.119 s best) |
 | retired instructions | **1 585 865 000** (5000 iterations, 317 173 each) |
 | simulation throughput | **746 MIPS** mean, 748 MIPS best |
-| peak RSS | 25 MiB |
+| peak RSS | 25 MiB (9 MiB of it Spike's instruction cache and fill list) |
 
 CoreMark's own report is at the bottom of `out/coremark.log`. The three data
 CRCs — `crclist 0xe714`, `crcmatrix 0x1fd7`, `crcstate 0x8e3a` — are the
@@ -143,7 +200,7 @@ statement about the guest compiler, not about Spike: `rdcycle` in Spike advances
 once per retired instruction, so it is the score an IPC=1 machine would get. The
 number that means something here is the 746 MIPS.
 
-### None of the optimization work below shows up on CoreMark
+### None of the optimization work shows up on CoreMark
 
 Interleaved A/B against a pristine build of upstream `c09c0cce`, 15 runs each,
 same binary image, median of each set:
@@ -156,20 +213,20 @@ same binary image, median of each set:
 That is a wash, and it is the expected result. Every change in the log below is
 in the MMU, the instruction cache or the opcode map, and CoreMark exercises none
 of them: no paging, no `sfence.vma`, no `fence.i`, and a hot loop that fits in a
-few hundred instruction-cache slots and stays there for the whole run. The 8 MiB
-instruction cache is pure overhead for it and does not measurably cost anything
-either.
+few hundred instruction-cache slots and stays there for the whole run. Spike's
+8 MiB instruction cache is pure overhead for it, and does not measurably cost
+anything either.
 
-The profile says the same thing (gperftools, three runs merged, 6315 samples):
+The profile says the same thing (gperftools, six runs merged, 12 704 samples):
 
 | flat share | symbol |
 |---|---|
-| 28.3 % | `processor_t::step()` — fetch, tag check, indirect call |
-| 8.7 % | `fast_rv64i_lh` |
-| 7.7 % | `fast_rv64i_c_ld` |
+| 27.4 % | `processor_t::step()` — fetch, tag check, indirect call |
+| 9.4 % | `fast_rv64i_lh` |
+| 7.3 % | `fast_rv64i_c_ld` |
 | 5.1 % | `fast_rv64i_lbu` |
-| 2.8 % | `fast_rv64i_c_bnez` |
-| … | ~40 more handlers, none above 2.8 % |
+| 3.0 % | `fast_rv64i_c_lw` |
+| … | ~40 more handlers, none above 2.9 % |
 
 Not one MMU, page-walk, opcode-map or icache-refill symbol appears anywhere in
 the profile. What is left is the dispatch loop and the handlers themselves —
