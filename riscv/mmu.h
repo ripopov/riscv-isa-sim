@@ -56,7 +56,9 @@ struct tlb_entry_t {
   reg_t target_addr;
 };
 
-struct dtlb_entry_t {
+// Padded to a power of two: it makes indexing a shift rather than a multiply,
+// and stops entries from straddling host cache lines.
+struct alignas(32) dtlb_entry_t {
   tlb_entry_t data;
   reg_t tag;
 };

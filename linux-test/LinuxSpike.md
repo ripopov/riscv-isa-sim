@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.383 s** mean (0.379 s best) |
+| wall clock, reset → `ls` → power off | **0.384 s** mean (0.377 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **303.6 MIPS** mean, 306.5 MIPS best |
+| simulation throughput | **302 MIPS** mean, 308 MIPS best |
 | peak RSS | 95 MiB |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
@@ -283,6 +283,41 @@ Starting the simulation was **4 %** of the run, all of it getting the 25 MB
 
 **+4.6 %** together (290.2 → 303.6 MIPS).
 
+### 11 — diminishing returns
+
+The profile is flat now. `processor_t::step()` is 29 % of host time, of which the
+dispatch loop — icache tag check, indirect call, next-entry chase — is 22 % and
+refill/decode only 6 %. Load and store handlers are another ~20 %, and MMU slow
+paths ~15 %. At 116 M instructions in 0.38 s that is about 16 host cycles per
+target instruction.
+
+Things tried in this round:
+
+* **Fast load path kept in registers.** `mmu_t::load()` declared its result
+  buffer outside the fast/slow split, and the slow path takes its address, so
+  every load handler stored the value it had just fetched into a stack slot and
+  read it straight back. Scoping the buffer to the slow path removes the round
+  trip and the stack frame. Strictly better code; no measurable time change, the
+  store-to-load forward was hidden behind the target load's own latency.
+* **TLB entries padded to 32 bytes** (`alignas(32)` on `dtlb_entry_t`), so
+  indexing is a shift instead of a multiply by 24 and entries stop straddling
+  host cache lines. Back-to-back A/B, 15 runs each: 299.3 → 302.6 MIPS,
+  **+1.1 %**.
+* **Profile-guided optimization** of the Spike build (`-fprofile-generate`, boot
+  once, `-fprofile-use`): 303.2 vs 301.9 MIPS — within noise, and not worth a
+  two-pass build. What is left is cache misses and indirect-branch mispredicts,
+  which PGO does not help.
+* **ISA string fidelity**: RVA22U64 also mandates Zicclsm, Ziccif, Ziccrse,
+  Ziccamoa and Za64rs, which Spike models and the benchmark was not asking for.
+  Added — Zicclsm decides whether misaligned accesses are handled by the hardware
+  or trap out to firmware. No behavioural change here (identical instruction
+  count and commit log), so this target never issues a misaligned access, but the
+  configuration is now actually RVA22.
+
+What is left would need a different interpreter structure (threaded dispatch
+instead of an indirect call per instruction), or eliminating the `fence.i`
+flushes, which have no address operand and so must invalidate everything.
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -307,7 +342,8 @@ pristine build of upstream `c09c0cce`:
 | + address-selective `sfence.vma` | 116 M | 0.616 s | 188.5 |
 | + 256 K-entry instruction cache | 116 M | 0.402 s | 289.0 |
 | + icache page tracking | 116 M | 0.400 s | 290.2 |
-| + 2048-entry TLB, bulk payload load (current) | 116 M | 0.383 s | **303.6** |
+| + 2048-entry TLB, bulk payload load | 116 M | 0.383 s | 303.6 |
+| + register-resident load path, padded TLB entries (current) | 116 M | 0.384 s | **302** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the
