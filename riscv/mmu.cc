@@ -24,6 +24,8 @@ mmu_t::mmu_t(simif_t* sim, endianness_t endianness, processor_t* proc, reg_t cac
 #ifndef RISCV_ENABLE_DUAL_ENDIAN
   assert(endianness == endianness_little);
 #endif
+  icache_nfilled = 0;
+  flush_icache_decodes();
   flush_tlb();
   yield_load_reservation();
 }
@@ -34,8 +36,24 @@ mmu_t::~mmu_t()
 
 void mmu_t::flush_icache()
 {
+  if (unlikely(icache_nfilled == ICACHE_ENTRIES)) {
+    for (size_t i = 0; i < ICACHE_ENTRIES; i++)
+      icache[i].tag = -1;
+  } else {
+    for (size_t i = 0; i < icache_nfilled; i++)
+      icache[icache_filled[i]].tag = -1;
+  }
+
+  icache_nfilled = 0;
+}
+
+void mmu_t::flush_icache_decodes()
+{
   for (size_t i = 0; i < ICACHE_ENTRIES; i++)
-    icache[i].tag = -1;
+    icache[i].data = {nullptr, insn_t(0)};
+
+  icache_nfilled = ICACHE_ENTRIES;
+  flush_icache();
 }
 
 void mmu_t::flush_tlb()

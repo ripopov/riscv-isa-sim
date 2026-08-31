@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.743 s** mean (0.731 s best) |
+| wall clock, reset → `ls` → power off | **0.660 s** mean (0.651 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **156.3 MIPS** mean, 158.9 MIPS best |
+| simulation throughput | **176.0 MIPS** mean, 178.4 MIPS best |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
 Instruction count comes from Spike's own `--stats`, which reports a monotonic
@@ -129,13 +129,66 @@ fast_rv64i_lbu:
 
 Fix: `-fno-stack-protector -fcf-protection=none` in `00-spike.sh`. **+2.7 %**.
 
+### 4 — the opcode map was a linear scan over 128 buckets
+
+The dispatch loop's `refill_icache()` path calls `processor_t::decode_insn()`,
+which walked a bucket of the opcode map keyed on `insn.bits() % 128` — i.e. on
+the major opcode alone. Everything in the OP, OP-IMM, LOAD, STORE and BRANCH
+spaces (base + M + all of Zba/Zbb/Zbs) lands in one bucket each, tens of entries
+long, searched linearly. **23 % of all host time** was in that scan.
+
+Fix: key the map on the major opcode *and* funct3 (bits 6:0 gathered with bits
+14:12, 1024 buckets), and flatten it from 1024 separate `std::vector`s into one
+contiguous array plus a start-offset table, so a decode is a single indirection
+into memory it will find hot. Because the index is a pure bit gather,
+`index(a & b) == index(a) & index(b)`, which makes working out the buckets an
+encoding belongs in a two-line computation instead of the old stride arithmetic.
+The chain scan disappears from the profile. **+4.3 %** (156.3 → 163.0 MIPS).
+
+### 5 — the instruction cache was flushed 33 400 times, the hard way
+
+Counting flush-triggering instructions in the target (`spike -g` PC histogram,
+mnemonics resolved through `objdump`) — the boot executes **22 462 `sfence.vma`
+and 10 937 `fence.i`**, one flush every ~3 500 instructions. Each one walked all
+4096 `icache_entry_t` slots writing `tag = -1`: a strided scatter over 128 KB, so
+33 400 flushes dirtied 4.3 GB of cache lines. And with the cache reset that often
+it never warms up — only ~100 slots were live at each flush, so the target was
+re-decoding an instruction every ~35 executed.
+
+Two fixes, both exact:
+
+* **Flush only what was filled.** `mmu_t` now records the slot index on every
+  refill; `flush_icache()` invalidates just those (falling back to a full walk in
+  the rare case the list overflows). Typical flush touches ~100 slots, not 4096.
+* **Reuse the decode.** A flush invalidates tags but leaves the decoded handler
+  in the slot, and an encoding always maps to the same handler — so a refill that
+  finds the slot still holding the encoding it just fetched skips the opcode-map
+  search entirely. Only a rebuild of the opcode map (a `misa`/`xlen` write, or
+  enabling commit logging) invalidates that, which is what the new
+  `mmu_t::flush_icache_decodes()` handles.
+
+**+8.0 %** (163.0 → 176.0 MIPS).
+
+### Verification
+
+Every change above is meant to be semantics-preserving, checked against a
+pristine build of upstream `c09c0cce`:
+
+* `--log-commits` output for the first **7 389 902 instructions** of the boot is
+  byte-for-byte identical.
+* The full boot console output is identical.
+* The retired-instruction count is identical (116 152 768) on every run.
+* `make check-riscv` (opcode overlap) passes.
+
 ### Summary so far
 
 | | instructions | sim time | MIPS |
 |---|---|---|---|
 | original harness, as reported | 206 M *(wrong)* | 2.38 s | 86.6 |
 | original image, correctly counted | 1 271 M | 2.39 s | 532.8 |
-| ftrace off + hardening off (current) | 116 M | 0.743 s | **156.3** |
+| ftrace off + hardening off | 116 M | 0.743 s | 156.3 |
+| + wider, flattened opcode map | 116 M | 0.713 s | 163.0 |
+| + cheap icache flush, decode reuse (current) | 116 M | 0.660 s | **176.0** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

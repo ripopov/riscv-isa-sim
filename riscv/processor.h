@@ -7,6 +7,7 @@
 #include "abstract_device.h"
 #include <string>
 #include <vector>
+#include <array>
 #include <unordered_map>
 #include <map>
 #include <cassert>
@@ -341,6 +342,18 @@ public:
   void register_extension(extension_t*);
   void build_opcode_map();
 
+  // Bucket index of an encoding: the major opcode (bits 6:0 -- for a compressed
+  // encoding, the quadrant plus low immediate bits) gathered with funct3
+  // (bits 14:12).  Splitting on funct3 as well keeps the crowded OP, OP-IMM,
+  // LOAD, STORE and BRANCH spaces from collapsing into one long search chain.
+  // This is a pure bit gather, so index(a & b) == index(a) & index(b), which is
+  // what lets build_opcode_map() work out which buckets an encoding belongs in.
+  static const size_t OPCODE_MAP_SIZE = 1 << 10;
+  static size_t opcode_map_index(insn_bits_t bits)
+  {
+    return (bits & 0x7f) | ((bits >> 5) & 0x380);
+  }
+
   // MMIO slave interface
   bool load(reg_t addr, size_t len, uint8_t* bytes) override;
   bool store(reg_t addr, size_t len, const uint8_t* bytes) override;
@@ -378,7 +391,7 @@ private:
   const cfg_t * const cfg;
 
   simif_t* sim;
-  mmu_t* mmu; // main memory is always accessed via the mmu
+  mmu_t* mmu = nullptr; // main memory is always accessed via the mmu
   std::unordered_map<std::string, extension_t*> custom_extensions;
   disassembler_t* disassembler;
   state_t state;
@@ -399,7 +412,12 @@ private:
   std::bitset<NUM_ISA_EXTENSIONS> extension_dynamic;
   mutable std::bitset<NUM_ISA_EXTENSIONS> extension_assumed_const;
 
-  std::vector<opcode_map_entry_t> opcode_map[128];
+  // Opcode map, flattened: the candidate encodings for bucket i live in
+  // opcode_map[opcode_map_start[i] .. opcode_map_start[i+1]).  Keeping every
+  // bucket in one contiguous array (rather than 1024 separate vectors) means
+  // decode_insn() takes a single indirection into memory it will find hot.
+  std::vector<opcode_map_entry_t> opcode_map;
+  std::array<uint32_t, OPCODE_MAP_SIZE + 1> opcode_map_start;
   std::vector<insn_desc_t> instructions;
   std::vector<insn_desc_t> custom_instructions;
   std::unordered_map<reg_t,uint64_t> pc_histogram;

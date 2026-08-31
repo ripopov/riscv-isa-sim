@@ -324,7 +324,17 @@ public:
   {
     auto [insn, length] = fetch_insn(addr);
 
-    insn_fetch_t fetch = {proc->decode_insn(insn), insn};
+    // flush_icache() only invalidates tags, so this slot may still hold the
+    // decode of the very encoding we just fetched.  An encoding always maps to
+    // the same handler, so that decode can be reused instead of searching the
+    // opcode map again -- worth doing because the target flushes the
+    // instruction cache on every fence.i and sfence.vma, far more often than
+    // the code behind those addresses actually changes.
+    const bool decoded = entry->data.func && entry->data.insn.bits() == insn;
+
+    insn_fetch_t fetch = {decoded ? entry->data.func : proc->decode_insn(insn), insn};
+    if (icache_nfilled < ICACHE_ENTRIES)
+      icache_filled[icache_nfilled++] = entry - icache;
     entry->tag = addr;
     entry->next = &icache[icache_index(addr + length)];
     entry->data = fetch;
@@ -368,6 +378,9 @@ public:
 
   void flush_tlb();
   void flush_icache();
+  // Drop every cached decode.  Needed when the encoding -> handler mapping
+  // itself changes, i.e. whenever the opcode map is rebuilt.
+  void flush_icache_decodes();
 
   void register_memtracer(memtracer_t*);
 
@@ -400,6 +413,14 @@ private:
 
   // implement an instruction cache for simulator performance
   icache_entry_t icache[ICACHE_ENTRIES];
+
+  // Slots filled since the last flush.  The target flushes the instruction
+  // cache far more often than it manages to fill 4096 slots, so invalidating
+  // only the slots that were actually filled is much cheaper than walking the
+  // whole cache.  icache_nfilled == ICACHE_ENTRIES means the list overflowed
+  // and a flush has to fall back to walking everything.
+  uint32_t icache_filled[ICACHE_ENTRIES];
+  size_t icache_nfilled;
 
   // implement a TLB for simulator performance
   static const reg_t TLB_ENTRIES = 256;

@@ -677,9 +677,9 @@ reg_t processor_t::throw_instruction_address_misaligned(reg_t pc)
 
 insn_func_t processor_t::decode_insn(insn_t insn)
 {
-  const auto& pool = opcode_map[insn.bits() % std::size(opcode_map)];
-
-  for (auto p = pool.begin(); ; ++p) {
+  // Every bucket ends with the catch-all illegal-instruction encoding, so the
+  // search is guaranteed to terminate and needs no bounds check.
+  for (auto p = &opcode_map[opcode_map_start[opcode_map_index(insn.bits())]]; ; ++p) {
     if ((insn.bits() & p->mask) == p->match) {
       return p->func;
     }
@@ -697,28 +697,42 @@ void processor_t::build_opcode_map()
 {
   bool rve = extension_enabled('E');
   bool zca = extension_enabled(EXT_ZCA);
-  const size_t N = std::size(opcode_map);
+
+  std::vector<std::vector<opcode_map_entry_t>> buckets(OPCODE_MAP_SIZE);
 
   auto build_one = [&](const insn_desc_t& desc) {
     auto func = desc.func(xlen, rve, log_commits_enabled);
     if (!zca && insn_length(desc.match) % 4)
       func = &::illegal_instruction;
 
-    auto stride = std::min(N, size_t(1) << ctz(~desc.mask));
-    for (size_t i = desc.match & (stride - 1); i < N; i += stride) {
-      if ((desc.match % N) == (i & desc.mask))
-        opcode_map[i].push_back({desc.match, desc.mask, func});
+    // The bucket bits this encoding constrains are exactly the ones its mask
+    // contributes to the index; it belongs in every bucket agreeing on those.
+    const size_t fixed = opcode_map_index(desc.mask);
+    const size_t want = opcode_map_index(desc.match) & fixed;
+    for (size_t i = 0; i < OPCODE_MAP_SIZE; i++) {
+      if ((i & fixed) == want)
+        buckets[i].push_back({desc.match, desc.mask, func});
     }
   };
 
-  for (auto& p : opcode_map)
-    p.clear();
-
+  // Registration order is significant: overlapping encodings are registered
+  // most-specific first and the catch-all last, and flattening preserves it.
   for (auto& d : custom_instructions)
     build_one(d);
 
   for (auto& d : instructions)
     build_one(d);
+
+  opcode_map.clear();
+  for (size_t i = 0; i < OPCODE_MAP_SIZE; i++) {
+    opcode_map_start[i] = opcode_map.size();
+    opcode_map.insert(opcode_map.end(), buckets[i].begin(), buckets[i].end());
+  }
+  opcode_map_start[OPCODE_MAP_SIZE] = opcode_map.size();
+
+  // Cached decodes were produced by the previous map and are now stale.
+  if (mmu)
+    mmu->flush_icache_decodes();
 }
 
 void processor_t::register_extension(extension_t *x) {
