@@ -15,6 +15,7 @@
 #include "cfg.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cassert>
 #include <cstddef>
 #include <stdlib.h>
@@ -338,8 +339,13 @@ public:
     const bool decoded = entry->data.func && entry->data.insn.bits() == insn;
 
     insn_fetch_t fetch = {decoded ? entry->data.func : proc->decode_insn(insn), insn};
-    if (icache_nfilled < ICACHE_ENTRIES)
+    // A slot holding some other address is already listed; only a slot that is
+    // invalid is new, so the list holds each slot at most once.
+    if (entry->tag == reg_t(-1) && icache_nfilled < ICACHE_ENTRIES)
       icache_filled[icache_nfilled++] = entry - icache;
+    note_icache_page(addr);
+    if (unlikely(addr % PGSIZE + length > PGSIZE))
+      note_icache_page(addr + length - 1);
     entry->tag = addr;
     entry->next = &icache[icache_index(addr + length)];
     entry->data = fetch;
@@ -429,6 +435,18 @@ private:
   // and a flush has to fall back to walking everything.
   uint32_t icache_filled[ICACHE_ENTRIES];
   size_t icache_nfilled;
+
+  // Which pages the instruction cache may hold decoded instructions from, so
+  // that an SFENCE.VMA naming a page it holds none from -- the common case,
+  // since most of them name data pages -- does not have to flush it.  Pages are
+  // aliased onto bits rather than tracked exactly; because bits are only ever
+  // set, never cleared for an individual page, that can cause a needless flush
+  // but never a missed one.
+  static const size_t ICACHE_PAGE_TAGS = 8192;
+  std::bitset<ICACHE_PAGE_TAGS> icache_pages;
+
+  void note_icache_page(reg_t vaddr) { icache_pages.set((vaddr / PGSIZE) % ICACHE_PAGE_TAGS); }
+  bool icache_holds_page(reg_t vaddr) const { return icache_pages[(vaddr / PGSIZE) % ICACHE_PAGE_TAGS]; }
 
   // implement a TLB for simulator performance
   static const reg_t TLB_ENTRIES = 256;

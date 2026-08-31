@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.402 s** mean (0.397 s best) |
+| wall clock, reset → `ls` → power off | **0.400 s** mean (0.393 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **289.0 MIPS** mean, 292.6 MIPS best |
+| simulation throughput | **290.2 MIPS** mean, 295.6 MIPS best |
 | peak RSS | 95 MiB |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
@@ -236,6 +236,26 @@ peak RSS for this benchmark is 95 MiB — which is worth flagging for
 many-hart simulations, but is a good trade at the default of one or a few harts.
 **+53 %** (188.5 → 289.0 MIPS).
 
+### 9 — `sfence.vma` still flushed the instruction cache for data pages
+
+Counters in a throwaway build: with everything above, the boot does **6.60 M
+instruction-cache refills** — one per 17.6 instructions — against only 24 625
+flushes, i.e. essentially every refill exists because a flush threw the entry
+away. 87 % of refills skip the decode (change 5), but they still re-fetch.
+
+`flush_tlb_vaddr()` was flushing the whole instruction cache for every
+`sfence.vma`, even though the cache holds nothing from most of the pages being
+invalidated — they are data pages. `mmu_t` now keeps a bitmap of the pages it has
+filled instruction-cache slots from, aliased onto 8192 bits: bits are only ever
+set, never cleared for an individual page, so aliasing can cause a needless flush
+but never a missed one, and the bitmap is reset whenever the cache is emptied.
+Straddling instructions mark both pages they read from.
+
+This drops the `sfence.vma`s that flush the instruction cache from 22 443 to
+**26**, and refills from 6.60 M to 5.54 M. Only **+0.4 %** in the end, because
+what remains is dominated by `fence.i`, which has no address operand and so must
+flush everything (290.2 MIPS).
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -258,7 +278,8 @@ pristine build of upstream `c09c0cce`:
 | + cheap icache flush, decode reuse | 116 M | 0.660 s | 176.0 |
 | + chunked, mmap-backed target memory | 116 M | 0.654 s | 177.6 |
 | + address-selective `sfence.vma` | 116 M | 0.616 s | 188.5 |
-| + 256 K-entry instruction cache (current) | 116 M | 0.402 s | **289.0** |
+| + 256 K-entry instruction cache | 116 M | 0.402 s | 289.0 |
+| + icache page tracking (current) | 116 M | 0.400 s | **290.2** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

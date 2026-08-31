@@ -45,6 +45,7 @@ void mmu_t::flush_icache()
   }
 
   icache_nfilled = 0;
+  icache_pages.reset();
 }
 
 void mmu_t::flush_icache_decodes()
@@ -78,10 +79,13 @@ void mmu_t::flush_tlb_vaddr(reg_t vaddr)
 
   // The PTE cache is keyed by physical address, so there is no way to tell
   // which entry holds the leaf PTE for this virtual address -- but it is small.
-  // The instruction cache is virtually tagged, and flushing it is cheap because
-  // only the slots filled since the last flush have to be invalidated.
   memset(pte_cache, -1, sizeof(pte_cache));
-  flush_icache();
+
+  // The instruction cache is virtually tagged, so anything it holds from this
+  // page is stale.  Most SFENCE.VMAs name a data page it holds nothing from,
+  // and then there is nothing to do.
+  if (icache_holds_page(vaddr))
+    flush_icache();
 }
 
 [[noreturn]] void throw_access_exception(bool virt, reg_t addr, access_type type)
