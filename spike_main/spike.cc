@@ -322,6 +322,10 @@ static std::vector<size_t> parse_hartids(const char *s)
 
 int main(int argc, char** argv)
 {
+  // Timed from here rather than from the start of simulation, so that the cost
+  // of building the machine -- which is where a larger cache trades startup for
+  // throughput -- cannot hide from --stats.
+  const auto start = std::chrono::steady_clock::now();
   bool debug = false;
   bool halted = false;
   bool histogram = false;
@@ -587,7 +591,6 @@ int main(int argc, char** argv)
   s.configure_log(log, log_commits);
   s.set_histogram(histogram);
 
-  const auto start = std::chrono::steady_clock::now();
   auto return_code = s.run();
   const auto elapsed = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - start).count();

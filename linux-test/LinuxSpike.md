@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.384 s** mean (0.377 s best) |
+| wall clock, process start → `ls` → power off | **0.394 s** mean (0.388 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **302 MIPS** mean, 308 MIPS best |
+| simulation throughput | **295 MIPS** mean, 299 MIPS best |
 | peak RSS | 95 MiB |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
@@ -314,9 +314,49 @@ Things tried in this round:
   count and commit log), so this target never issues a misaligned access, but the
   configuration is now actually RVA22.
 
-What is left would need a different interpreter structure (threaded dispatch
-instead of an indirect call per instruction), or eliminating the `fence.i`
-flushes, which have no address operand and so must invalidate everything.
+Also tried: `-flto-partition=one` instead of GCC's default 20 LTO partitions, in
+case the dispatch loop and the handlers were landing in different partitions —
+299.3 vs 302.7 MIPS, within noise.
+
+### 12 — the throughput metric was hiding startup cost
+
+Re-tuning `ICACHE_ENTRIES` looked like it wanted to go higher: 256 K → 1 M
+measured 302.7 → 313.4 MIPS. It was an artifact. `--stats` timed `sim_t::run()`,
+but the cache is allocated and initialised in `sim_t`'s *constructor*, before
+that — so making the cache bigger moved work out of the measured window. Total
+process time went the other way, 0.398 s → 0.412 s.
+
+`--stats` now times from the top of `main()`, so building the machine is counted.
+Re-measured honestly, and 256 K is the real optimum:
+
+| entries | size | MIPS (end to end) |
+|---|---|---|
+| 64 K | 2 MiB | 275.7 |
+| 128 K | 4 MiB | 286.7 |
+| **256 K** | **8 MiB** | **298.4** |
+| 512 K | 16 MiB | 295.1 |
+| 1 M | 32 MiB | 283.0 |
+
+The headline number drops from ~302 to ~295 MIPS because it now includes the
+~10 ms of building the machine. Every figure in this document is on the honest
+metric.
+
+### What is left
+
+The profile is flat and the remaining items are each a percent or two:
+
+* **The dispatch loop, 22 %.** An indirect call per instruction, whose target
+  the branch predictor cannot learn. Reducing it means threaded dispatch — every
+  handler tail-calling the next so each gets its own branch site — which is a
+  rewrite of the handler ABI, not an incremental change.
+* **`fence.i`, ~5 %.** 10 937 of them, from the kernel patching its own text, and
+  with no address operand each must invalidate the whole instruction cache; they
+  now account for 83 % of the 5.54 M refills. Avoiding them needs tracking writes
+  to the *physical* pages that hold cached instructions, and every path that can
+  write target memory — MMU fast path, MMU slow path, HTIF chunk writes, device
+  DMA — would have to participate. That is a correctness surface not worth
+  expanding for a few percent in a golden reference model.
+* **Everything else** is target memory access and page walks: inherent work.
 
 ### Verification
 
@@ -343,7 +383,8 @@ pristine build of upstream `c09c0cce`:
 | + 256 K-entry instruction cache | 116 M | 0.402 s | 289.0 |
 | + icache page tracking | 116 M | 0.400 s | 290.2 |
 | + 2048-entry TLB, bulk payload load | 116 M | 0.383 s | 303.6 |
-| + register-resident load path, padded TLB entries (current) | 116 M | 0.384 s | **302** |
+| + register-resident load path, padded TLB entries | 116 M | 0.384 s | 302 |
+| honest timing (startup included) — **current** | 116 M | 0.394 s | **295** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the
