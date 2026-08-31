@@ -9,3 +9,4 @@ cd "$(dirname "$0")"
 ./03-opensbi.sh
 ./03b-dtb.sh
 ./04-run.sh
+./bench.sh 7
