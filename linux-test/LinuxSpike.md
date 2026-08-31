@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.660 s** mean (0.651 s best) |
+| wall clock, reset → `ls` → power off | **0.654 s** mean (0.636 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **176.0 MIPS** mean, 178.4 MIPS best |
+| simulation throughput | **177.6 MIPS** mean, 182.6 MIPS best |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
 Instruction count comes from Spike's own `--stats`, which reports a monotonic
@@ -169,6 +169,22 @@ Two fixes, both exact:
 
 **+8.0 %** (163.0 → 176.0 MIPS).
 
+### 6 — target memory was a red-black tree with a node per 4 KiB page
+
+`mem_t` allocated target RAM one `calloc(4096)` at a time and indexed it with a
+`std::map<reg_t, char*>`. For a 1 GiB target that is a quarter of a million tree
+nodes on the address-translation path — `sim_t::addr_to_mem()` plus
+`mem_t::contents()` were **5.1 %** of host time even behind the
+`addr_to_mem_cache` hash table — and it scattered target memory over a quarter of
+a million small heap blocks, none host-page aligned, so every target page
+straddled two host pages.
+
+Fix: allocate lazily in 2 MiB chunks (still sparse — untouched chunks are never
+allocated, and `mmap(MAP_NORESERVE)` chunks are only backed as the target touches
+them) and index them with a flat `std::vector<char*>`, so a lookup is one load.
+Chunks are page aligned and large enough for the host to back with huge pages.
+`addr_to_mem` drops to 1.5 %. **+0.9 %** mean, +2.4 % best (176.0 → 177.6 MIPS).
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -188,7 +204,8 @@ pristine build of upstream `c09c0cce`:
 | original image, correctly counted | 1 271 M | 2.39 s | 532.8 |
 | ftrace off + hardening off | 116 M | 0.743 s | 156.3 |
 | + wider, flattened opcode map | 116 M | 0.713 s | 163.0 |
-| + cheap icache flush, decode reuse (current) | 116 M | 0.660 s | **176.0** |
+| + cheap icache flush, decode reuse | 116 M | 0.660 s | 176.0 |
+| + chunked, mmap-backed target memory (current) | 116 M | 0.654 s | **177.6** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

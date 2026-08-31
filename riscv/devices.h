@@ -8,6 +8,7 @@
 #include <map>
 #include <queue>
 #include <vector>
+#include <algorithm>
 #include <utility>
 #include <cassert>
 
@@ -67,8 +68,17 @@ class mem_t : public abstract_mem_t {
 
  private:
   bool load_store(reg_t addr, size_t len, uint8_t* bytes, bool store);
+  reg_t chunk_size(size_t idx) const { return std::min(CHUNK_SIZE, sz - idx * CHUNK_SIZE); }
 
-  std::map<reg_t, char*> sparse_memory_map;
+  // Target memory is still allocated lazily, but in chunks much larger than a
+  // page.  A separate allocation per 4 KiB page put a red-black tree with a node
+  // per page -- a quarter of a million of them for a 1 GiB target -- on the
+  // address-translation path, and scattered target memory over as many small
+  // heap blocks, none of them host-page aligned.  A flat table of chunk pointers
+  // makes the lookup a single load, and mmap'd chunks are page aligned and can
+  // be backed by host huge pages.
+  static const reg_t CHUNK_SIZE = reg_t(1) << 21; // 2 MiB
+  std::vector<char*> chunks;
   reg_t sz;
 };
 

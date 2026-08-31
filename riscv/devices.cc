@@ -1,6 +1,11 @@
 #include "devices.h"
 #include "mmu.h"
 #include <stdexcept>
+#include <sys/mman.h>
+
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
 
 mmio_device_map_t& mmio_device_map()
 {
@@ -101,7 +106,7 @@ const std::map<reg_t, abstract_device_t*>& bus_t::get_devices() const {
 }
 
 mem_t::mem_t(reg_t size)
-  : sz(size)
+  : chunks((size + CHUNK_SIZE - 1) / CHUNK_SIZE, nullptr), sz(size)
 {
   if (size == 0 || size % PGSIZE != 0)
     throw std::runtime_error("memory size must be a positive multiple of 4 KiB");
@@ -109,8 +114,9 @@ mem_t::mem_t(reg_t size)
 
 mem_t::~mem_t()
 {
-  for (auto& entry : sparse_memory_map)
-    free(entry.second);
+  for (size_t i = 0; i < chunks.size(); i++)
+    if (chunks[i])
+      munmap(chunks[i], chunk_size(i));
 }
 
 bool mem_t::load_store(reg_t addr, size_t len, uint8_t* bytes, bool store)
@@ -135,29 +141,25 @@ bool mem_t::load_store(reg_t addr, size_t len, uint8_t* bytes, bool store)
 }
 
 char* mem_t::contents(reg_t addr) {
-  reg_t ppn = addr >> PGSHIFT, pgoff = addr % PGSIZE;
-  auto search = sparse_memory_map.find(ppn);
-  if (search == sparse_memory_map.end()) {
-    auto res = (char*)calloc(PGSIZE, 1);
-    if (res == nullptr)
+  char*& chunk = chunks.at(addr / CHUNK_SIZE);
+
+  if (unlikely(chunk == nullptr)) {
+    // MAP_NORESERVE because target memory is sparse by design: only the pages
+    // the target actually touches ever get backed by host memory.
+    void* p = mmap(nullptr, chunk_size(addr / CHUNK_SIZE), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED)
       throw std::bad_alloc();
-    sparse_memory_map[ppn] = res;
-    return res + pgoff;
+    chunk = (char*)p;
   }
-  return search->second + pgoff;
+
+  return chunk + addr % CHUNK_SIZE;
 }
 
 void mem_t::dump(std::ostream& o) {
-  const char empty[PGSIZE] = {0};
-  for (reg_t i = 0; i < sz; i += PGSIZE) {
-    reg_t ppn = i >> PGSHIFT;
-    auto search = sparse_memory_map.find(ppn);
-    if (search == sparse_memory_map.end()) {
-      o.write(empty, PGSIZE);
-    } else {
-      o.write(sparse_memory_map[ppn], PGSIZE);
-    }
-  }
+  const std::vector<char> empty(CHUNK_SIZE, 0);
+  for (size_t i = 0; i < chunks.size(); i++)
+    o.write(chunks[i] ? chunks[i] : empty.data(), chunk_size(i));
 }
 
 external_sim_device_t::external_sim_device_t(abstract_sim_if_t* sim) 
