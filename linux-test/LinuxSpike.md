@@ -53,7 +53,7 @@ zicbom_zicbop_zicboz_zkt_svpbmt_svinval_svnapot \
 ## Results
 
 Host: Intel Core Ultra 7 265K (20 cores), Ubuntu 25.10, GCC 15.2.0.
-Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
+Spike 1.1.1-dev @ `c09c0cce` + local changes. 12 consecutive runs.
 
 | metric | value |
 |---|---|
@@ -61,11 +61,13 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
 | simulation throughput | **295 MIPS** mean, 299 MIPS best |
 | peak RSS | 95 MiB |
-| Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
+| of which: build the machine + load the 25 MB ELF | ≈0.02 s (≈5 %) |
 
-Instruction count comes from Spike's own `--stats`, which reports a monotonic
-per-hart retired-instruction counter, so it covers OpenSBI + the whole kernel boot
-+ `ls`. MIPS = that count / simulated wall clock.
+Both numbers come from Spike's own `--stats`. The instruction count is a
+monotonic per-hart retired-instruction counter, covering OpenSBI + the whole
+kernel boot + `ls`; the time is measured from the top of `main()`, so building
+the machine and loading the payload are included. MIPS is one divided by the
+other.
 
 Artifacts: `out/Image` (24 MB, initramfs linked in), `out/fw_payload.elf` (25 MB),
 `out/spike-rva22.dtb`, boot log in `out/run.log`.
@@ -369,7 +371,7 @@ pristine build of upstream `c09c0cce`:
 * The retired-instruction count is identical (116 152 768) on every run.
 * `make check-riscv` (opcode overlap) passes.
 
-### Summary so far
+### Summary
 
 | | instructions | sim time | MIPS |
 |---|---|---|---|
@@ -387,8 +389,10 @@ pristine build of upstream `c09c0cce`:
 | honest timing (startup included) — **current** | 116 M | 0.394 s | **295** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
-cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the
-representative number, and it is the baseline the remaining work is measured against.
+cache-resident hot spot. The ftrace-free boot is the representative workload, and
+156 MIPS is the baseline the rest of the work is measured against — **295 MIPS is
+1.9x that**, on a target-instruction stream that is identical to upstream Spike's,
+instruction for instruction.
 
 ### Notes
 
