@@ -106,19 +106,24 @@ public:
 
   template<typename T>
   T ALWAYS_INLINE load(reg_t addr, xlate_flags_t xlate_flags = {}) {
-    target_endian<T> res;
     bool aligned = (addr & (sizeof(T) - 1)) == 0;
     auto [tlb_hit, host_addr, _] = access_tlb(tlb_load, addr);
 
+    // The slow path needs somewhere to write the result through, but keeping
+    // that buffer out of the fast path is what lets the loaded value stay in a
+    // register instead of making a round trip through the stack.
+    T res;
     if (likely(!xlate_flags.is_special_access() && aligned && tlb_hit)) {
-      res = *(target_endian<T>*)host_addr;
+      res = from_target(*(target_endian<T>*)host_addr);
     } else {
-      load_slow_path(addr, sizeof(T), (uint8_t*)&res, xlate_flags);
+      target_endian<T> target_res;
+      load_slow_path(addr, sizeof(T), (uint8_t*)&target_res, xlate_flags);
+      res = from_target(target_res);
     }
 
-    MMU_OBSERVE_LOAD(addr,from_target(res),sizeof(T));
+    MMU_OBSERVE_LOAD(addr, res, sizeof(T));
 
-    return from_target(res);
+    return res;
   }
 
   template<typename T>
