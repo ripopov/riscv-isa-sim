@@ -57,9 +57,10 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.616 s** mean (0.604 s best) |
+| wall clock, reset → `ls` → power off | **0.402 s** mean (0.397 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **188.5 MIPS** mean, 192.3 MIPS best |
+| simulation throughput | **289.0 MIPS** mean, 292.6 MIPS best |
+| peak RSS | 95 MiB |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
 Instruction count comes from Spike's own `--stats`, which reports a monotonic
@@ -207,6 +208,34 @@ This makes Spike *stricter*, not laxer: it now keeps stale entries exactly as
 long as the architecture permits, so target code that under-invalidates fails
 here as it would on hardware. **+6.1 %** (177.6 → 188.5 MIPS).
 
+### 8 — the instruction cache covered 8 KiB of text
+
+`icache_index()` is `(pc / 2) % ICACHE_ENTRIES`, so with `ICACHE_ENTRIES = 4096`
+the cache is direct mapped on PC bits 12:1 — **its whole reach is an 8 KiB window
+of addresses**. Any two instructions 8 KiB apart collide, and a kernel with
+megabytes of hot text spends its time evicting itself: a decode was still 18 % of
+host time, and the dispatch loop's tag check another 11 %, almost all of it
+conflict misses.
+
+That constant has presumably been 4096 since the days when 128 KiB was a lot of
+memory. Raising it was not worth doing before change 5, because every flush
+walked the entire cache; now that a flush only touches the slots that were
+actually filled, the cache can be as large as it is worth being. Measured:
+
+| entries | size | MIPS |
+|---|---|---|
+| 4 096 | 128 KiB | 188.5 |
+| 16 384 | 512 KiB | 226.8 |
+| 65 536 | 2 MiB | 259.0 |
+| 131 072 | 4 MiB | 279.1 |
+| **262 144** | **8 MiB** | **289.0** |
+| 1 048 576 | 32 MiB | 286.8 |
+
+256 K entries is the knee. It costs 8 MiB (plus a 1 MiB fill list) per hart —
+peak RSS for this benchmark is 95 MiB — which is worth flagging for
+many-hart simulations, but is a good trade at the default of one or a few harts.
+**+53 %** (188.5 → 289.0 MIPS).
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -228,7 +257,8 @@ pristine build of upstream `c09c0cce`:
 | + wider, flattened opcode map | 116 M | 0.713 s | 163.0 |
 | + cheap icache flush, decode reuse | 116 M | 0.660 s | 176.0 |
 | + chunked, mmap-backed target memory | 116 M | 0.654 s | 177.6 |
-| + address-selective `sfence.vma` (current) | 116 M | 0.616 s | **188.5** |
+| + address-selective `sfence.vma` | 116 M | 0.616 s | 188.5 |
+| + 256 K-entry instruction cache (current) | 116 M | 0.402 s | **289.0** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

@@ -303,7 +303,12 @@ public:
     return have_reservation;
   }
 
-  static const reg_t ICACHE_ENTRIES = 4096;
+  // The instruction cache is direct mapped on the low bits of the PC, so its
+  // size is also the span of the address range it can hold at once: 4096 entries
+  // only covered 8 KiB of text, and a target with a megabyte of hot code spent
+  // its time evicting itself.  Enlarging it costs 32 bytes per entry, which is
+  // only worth paying because flushes no longer walk the whole cache.
+  static const reg_t ICACHE_ENTRIES = 256 * 1024;
 
   inline size_t icache_index(reg_t addr)
   {
