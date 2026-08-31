@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-shot: fetch sources, build everything, run the benchmark.
+# One-shot: fetch sources, build everything, run both benchmarks.
 set -e
 cd "$(dirname "$0")"
 ./00-fetch.sh
@@ -10,3 +10,5 @@ cd "$(dirname "$0")"
 ./03b-dtb.sh
 ./04-run.sh
 ./bench.sh 7
+./05-coremark.sh
+./06-coremark-bench.sh 7

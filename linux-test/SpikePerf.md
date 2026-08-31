@@ -1,32 +1,45 @@
-# Linux (RVA22) on Spike — boot + `ls` benchmark
+# Spike throughput on RVA22 — Linux boot and CoreMark
 
-Boots a RISC-V 64 Linux image built for the **RVA22** profile on Spike, runs `ls`,
-and powers off. Measures end-to-end wall clock and simulator throughput (MIPS).
+Two benchmarks, both built for the **RVA22** profile, that bracket Spike's
+interpreter from opposite ends:
+
+* **Linux boot** — boots a RISC-V 64 kernel, runs `ls`, powers off. Megabytes of
+  hot text, S-mode paging, constant TLB and instruction-cache invalidation. This
+  is the workload the optimization log below is written against.
+* **CoreMark** — bare metal, M-mode, no paging, a working set of a few kilobytes.
+  Almost pure fetch-dispatch-execute.
+
+Both report end-to-end wall clock and simulator throughput (MIPS) from Spike's
+own `--stats`.
 
 ## Repro
 
-Prerequisites: `riscv64-linux-gnu-gcc` (Ubuntu 25.10 / GCC 15), `dtc`, `fakeroot`,
-`cpio`, `bc`, `curl`, plus Spike's own build deps.
+Prerequisites: `riscv64-linux-gnu-gcc` (Ubuntu 25.10 / GCC 15) for the Linux side,
+`riscv64-unknown-elf-gcc` + `picolibc-riscv64-unknown-elf` for the bare-metal side,
+plus `dtc`, `fakeroot`, `cpio`, `bc`, `curl` and Spike's own build deps.
 
 ```sh
 cd linux-test
-./build-all.sh          # fetch + build everything + run once
-./bench.sh 7            # repeat measurement, 7 runs, min/mean
+./build-all.sh          # fetch + build everything + run both benchmarks
+./bench.sh 7            # Linux boot, 7 runs, min/mean
+./06-coremark-bench.sh 7   # CoreMark, 7 runs, min/mean
 ```
 
 Or step by step:
 
 | step | what it does |
 |---|---|
-| `./00-fetch.sh` | Linux 6.19.14, BusyBox 1.38.0, musl 1.2.5, OpenSBI 1.7 |
+| `./00-fetch.sh` | Linux 6.19.14, BusyBox 1.38.0, musl 1.2.5, OpenSBI 1.7, CoreMark |
 | `./00-spike.sh` | Spike, `-O3 -march=native -flto -DNDEBUG -fno-stack-protector -fcf-protection=none` |
 | `./01-busybox-initramfs.sh` | musl + static BusyBox for RVA22U64, initramfs cpio |
 | `./02-linux.sh` | kernel (defconfig + `rva22.config`), initramfs linked in |
 | `./03-opensbi.sh` | OpenSBI `FW_PAYLOAD` wrapping the kernel → `out/fw_payload.elf` |
 | `./03b-dtb.sh` | Spike's DT + modern `riscv,isa-extensions` bindings |
 | `./04-run.sh` | boots on Spike, prints instructions / sim time / MIPS |
+| `./05-coremark.sh` | bare-metal CoreMark image → `out/coremark.elf` |
+| `./06-coremark-bench.sh` | runs CoreMark on Spike, prints instructions / sim time / MIPS |
 
-## Configuration
+## Configuration — Linux boot
 
 * **RVA22U64 (user)** — `rv64imafdc_zicsr_zifencei_zicntr_zihpm_zihintpause_zfhmin_zba_zbb_zbs_zicbom_zicbop_zicboz_zkt`
 * **RVA22S64 (Spike)** — the above `+ svpbmt svinval svnapot`, `--priv=MSU`, Sv39, 1 GiB RAM, 1 hart
@@ -50,7 +63,7 @@ zicbom_zicbop_zicboz_zkt_svpbmt_svinval_svnapot \
       --dtb=out/spike-rva22.dtb out/fw_payload.elf
 ```
 
-## Results
+## Results — Linux boot
 
 Host: Intel Core Ultra 7 265K (20 cores), Ubuntu 25.10, GCC 15.2.0.
 Spike 1.1.1-dev @ `c09c0cce` + local changes. 12 consecutive runs.
@@ -72,7 +85,100 @@ other.
 Artifacts: `out/Image` (24 MB, initramfs linked in), `out/fw_payload.elf` (25 MB),
 `out/spike-rva22.dtb`, boot log in `out/run.log`.
 
+## CoreMark
+
+### The port
+
+CoreMark upstream has no Spike target, so `coremark-port/` supplies one. It is
+small because Spike's front end already provides everything a bare-metal image
+needs: the target leaves a request in the `tohost` word, the front end takes it,
+zeroes it and answers in `fromhost`. Device 1 command 1 writes a character —
+that is `ee_printf`'s sink — and device 0 with an odd payload stops the
+simulation with an exit status.
+
+| file | what it is |
+|---|---|
+| `spike.ld` | flat image at `0x80000000`, `.tohost` in ordinary memory |
+| `crt.S` | park non-zero harts, set `gp`/`sp`, enable the FPU, zero `.bss`, call `main` |
+| `spike_port.c` | the HTIF mailbox: `spike_putchar`, `spike_exit` |
+| `core_portme.c/.h` | CoreMark's port hooks: seeds, `rdcycle` timing, init |
+
+Two things differ from CoreMark's stock `barebones` port, both forced by rv64:
+`ee_ptr_int` must be pointer-sized (`barebones` uses `ee_u32`, which would
+truncate every pointer the matrix benchmark aligns), and the image is built
+`-mcmodel=medany` because `medlow`'s `lui`/`addi` pair cannot reach
+`0x80000000`. Upstream's `ee_printf.c` ships an `#error` where the character
+sink belongs, which `05-coremark.sh` substitutes at build time rather than
+vendoring a copy of the other 700 lines.
+
+Guest build: `-O2 -march=<RVA22U64> -mabi=lp64d`, 5000 iterations of the 2K
+performance run, static memory. CoreMark is upstream `eembc/coremark` at
+`1f483d5b` (2025-05-01); it has no tagged releases.
+
+```sh
+spike --stats --isa=<RVA22 string> out/coremark.elf
+```
+
+### Results
+
+Same host and Spike build as above, seven consecutive runs.
+
+| metric | value |
+|---|---|
+| wall clock, process start → HTIF exit | **2.125 s** mean (2.119 s best) |
+| retired instructions | **1 585 865 000** (5000 iterations, 317 173 each) |
+| simulation throughput | **746 MIPS** mean, 748 MIPS best |
+| peak RSS | 25 MiB |
+
+CoreMark's own report is at the bottom of `out/coremark.log`. The three data
+CRCs — `crclist 0xe714`, `crcmatrix 0x1fd7`, `crcstate 0x8e3a` — are the
+canonical values for the 2K performance run, and `06-coremark-bench.sh` checks
+all three on every run; that is what validates the result here. CoreMark's own
+`Errors detected` line is expected: the only check it fails is the rule that a
+valid *submission* must run for at least ten seconds of target time, which at
+1 GHz nominal would be 10 G instructions and about 13 s of host time per run.
+
+The score CoreMark prints (3159 iterations/s, i.e. 3.16 CoreMark/MHz) is a
+statement about the guest compiler, not about Spike: `rdcycle` in Spike advances
+once per retired instruction, so it is the score an IPC=1 machine would get. The
+number that means something here is the 746 MIPS.
+
+### None of the optimization work below shows up on CoreMark
+
+Interleaved A/B against a pristine build of upstream `c09c0cce`, 15 runs each,
+same binary image, median of each set:
+
+| build | time | MIPS |
+|---|---|---|
+| upstream `c09c0cce` | 2.104 s | 753.7 |
+| this tree | 2.108 s | 752.4 |
+
+That is a wash, and it is the expected result. Every change in the log below is
+in the MMU, the instruction cache or the opcode map, and CoreMark exercises none
+of them: no paging, no `sfence.vma`, no `fence.i`, and a hot loop that fits in a
+few hundred instruction-cache slots and stays there for the whole run. The 8 MiB
+instruction cache is pure overhead for it and does not measurably cost anything
+either.
+
+The profile says the same thing (gperftools, three runs merged, 6315 samples):
+
+| flat share | symbol |
+|---|---|
+| 28.3 % | `processor_t::step()` — fetch, tag check, indirect call |
+| 8.7 % | `fast_rv64i_lh` |
+| 7.7 % | `fast_rv64i_c_ld` |
+| 5.1 % | `fast_rv64i_lbu` |
+| 2.8 % | `fast_rv64i_c_bnez` |
+| … | ~40 more handlers, none above 2.8 % |
+
+Not one MMU, page-walk, opcode-map or icache-refill symbol appears anywhere in
+the profile. What is left is the dispatch loop and the handlers themselves —
+the same ceiling described under *What is left*, with nothing in front of it.
+
 ## Optimization log
+
+Every figure in this section is the **Linux boot** benchmark; see above for what
+the same changes do to CoreMark (nothing).
 
 Starting point of the exercise was a reported *86 MIPS*. Profiling (gperftools
 `libprofiler` for the host side, `spike -g` PC histogram for the target side)
@@ -360,6 +466,11 @@ The profile is flat and the remaining items are each a percent or two:
   expanding for a few percent in a golden reference model.
 * **Everything else** is target memory access and page walks: inherent work.
 
+CoreMark corroborates the first item from the other direction: with paging, the
+instruction cache and the opcode map all out of the picture, `processor_t::step()`
+is still 28 % of host time and the rest is the handlers. Dispatch is the floor
+for both workloads, and it is the same floor upstream Spike has.
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -370,6 +481,10 @@ pristine build of upstream `c09c0cce`:
 * The full boot console output is identical.
 * The retired-instruction count is identical (116 152 768) on every run.
 * `make check-riscv` (opcode overlap) passes.
+* On CoreMark, `--log-commits` for the first **4 000 000 instructions** is
+  byte-for-byte identical between the two builds, as is the full CoreMark report
+  — including its three data CRCs, which match the canonical 2K performance-run
+  values.
 
 ### Summary
 
@@ -393,6 +508,16 @@ cache-resident hot spot. The ftrace-free boot is the representative workload, an
 156 MIPS is the baseline the rest of the work is measured against — **295 MIPS is
 1.9x that**, on a target-instruction stream that is identical to upstream Spike's,
 instruction for instruction.
+
+Across both benchmarks:
+
+| workload | upstream `c09c0cce` | this tree |
+|---|---|---|
+| Linux/RVA22 boot + `ls` | 156 MIPS | **295 MIPS** (1.9x) |
+| CoreMark, bare metal | 754 MIPS | **752 MIPS** (unchanged) |
+
+The gap between the two columns is the whole point: what was slow was never the
+interpreter core, it was everything the boot does that CoreMark does not.
 
 ### Notes
 

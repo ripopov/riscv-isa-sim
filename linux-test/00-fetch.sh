@@ -6,4 +6,6 @@ mkdir -p "$SRC"; cd "$SRC"
 [ -d busybox-1.38.0 ] || { curl -LO https://busybox.net/downloads/busybox-1.38.0.tar.bz2 && tar xf busybox-1.38.0.tar.bz2; }
 [ -d musl-1.2.5 ]     || { curl -LO https://musl.libc.org/releases/musl-1.2.5.tar.gz && tar xf musl-1.2.5.tar.gz; }
 [ -d opensbi-1.7 ]    || { curl -LO https://github.com/riscv-software-src/opensbi/archive/refs/tags/v1.7.tar.gz && tar xf v1.7.tar.gz; }
+# CoreMark has no versioned releases; the benchmark itself has not changed in years.
+[ -d coremark ]       || git clone --depth 1 https://github.com/eembc/coremark.git
 echo "FETCH OK"
