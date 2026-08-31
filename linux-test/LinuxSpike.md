@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.654 s** mean (0.636 s best) |
+| wall clock, reset → `ls` → power off | **0.616 s** mean (0.604 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **177.6 MIPS** mean, 182.6 MIPS best |
+| simulation throughput | **188.5 MIPS** mean, 192.3 MIPS best |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
 Instruction count comes from Spike's own `--stats`, which reports a monotonic
@@ -185,6 +185,28 @@ them) and index them with a flat `std::vector<char*>`, so a lookup is one load.
 Chunks are page aligned and large enough for the host to back with huge pages.
 `addr_to_mem` drops to 1.5 %. **+0.9 %** mean, +2.4 % best (176.0 → 177.6 MIPS).
 
+### 7 — `sfence.vma` threw away the whole TLB even when given one address
+
+Resolving the operands of every executed `sfence.vma` in the boot: **22 453 of
+22 462 name a single virtual address** (`sfence.vma a5`, Linux's
+`flush_tlb_page`); only 9 are the global form. Spike discarded all 768 TLB
+entries and the whole PTE cache for each one, so the data TLB never stayed warm
+— which is where the page-walk, PMP-check and TLB-refill time was going.
+
+`SFENCE.VMA` with `rs1 != x0` only has to order translations for that one
+address. `mmu_t::flush_tlb_vaddr()` invalidates the one direct-mapped slot in
+each TLB (found from the raw address — the index bits are below anything
+pointer masking can alter, and clearing without a tag compare only ever
+over-invalidates), clears the PTE cache (keyed by physical address, so the leaf
+PTE for this address cannot be identified — but it is only 4 KiB), and flushes
+the instruction cache, which is virtually tagged and, since change 5, cheap.
+`rs2` names an ASID, which this MMU does not track, so its translations are
+invalidated whatever the ASID — always permitted.
+
+This makes Spike *stricter*, not laxer: it now keeps stale entries exactly as
+long as the architecture permits, so target code that under-invalidates fails
+here as it would on hardware. **+6.1 %** (177.6 → 188.5 MIPS).
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -205,7 +227,8 @@ pristine build of upstream `c09c0cce`:
 | ftrace off + hardening off | 116 M | 0.743 s | 156.3 |
 | + wider, flattened opcode map | 116 M | 0.713 s | 163.0 |
 | + cheap icache flush, decode reuse | 116 M | 0.660 s | 176.0 |
-| + chunked, mmap-backed target memory (current) | 116 M | 0.654 s | **177.6** |
+| + chunked, mmap-backed target memory | 116 M | 0.654 s | 177.6 |
+| + address-selective `sfence.vma` (current) | 116 M | 0.616 s | **188.5** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

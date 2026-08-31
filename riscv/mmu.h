@@ -377,6 +377,9 @@ public:
   }
 
   void flush_tlb();
+  // Invalidate only the translations for one virtual address, which is all
+  // SFENCE.VMA with rs1 != x0 orders.
+  void flush_tlb_vaddr(reg_t vaddr);
   void flush_icache();
   // Drop every cached decode.  Needed when the encoding -> handler mapping
   // itself changes, i.e. whenever the opcode map is rebuilt.

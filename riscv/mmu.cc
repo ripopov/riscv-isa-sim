@@ -66,6 +66,24 @@ void mmu_t::flush_tlb()
   flush_icache();
 }
 
+void mmu_t::flush_tlb_vaddr(reg_t vaddr)
+{
+  // The TLBs are direct mapped on low VPN bits, which no pointer-masking
+  // transformation of the address can alter, so the slot is found from the raw
+  // address; clearing it without comparing tags only ever over-invalidates.
+  const reg_t idx = (vaddr / PGSIZE) % TLB_ENTRIES;
+  tlb_insn[idx].tag = -1;
+  tlb_load[idx].tag = -1;
+  tlb_store[idx].tag = -1;
+
+  // The PTE cache is keyed by physical address, so there is no way to tell
+  // which entry holds the leaf PTE for this virtual address -- but it is small.
+  // The instruction cache is virtually tagged, and flushing it is cheap because
+  // only the slots filled since the last flush have to be invalidated.
+  memset(pte_cache, -1, sizeof(pte_cache));
+  flush_icache();
+}
+
 [[noreturn]] void throw_access_exception(bool virt, reg_t addr, access_type type)
 {
   switch (type) {
