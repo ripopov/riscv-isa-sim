@@ -350,6 +350,7 @@ void processor_t::step(size_t n)
     }
 
 serialize:
+    insns_retired += instret;
     state.minstret->bump((mcountinhibit & MCOUNTINHIBIT_IR) ? 0 : instret);
 
     // Model a hart whose CPI is 1.

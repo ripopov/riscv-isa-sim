@@ -42,20 +42,6 @@ mkdir -p "$ROOT"/{bin,sbin,proc,sys,dev,etc/init.d,usr/bin,usr/sbin}
 cp "$BLD/busybox/busybox" "$ROOT/bin/busybox"
 for a in sh ls mount echo poweroff; do ln -sf /bin/busybox "$ROOT/bin/$a"; done
 
-# counter reader: retired instructions of the whole simulated run so far
-cat > "$BLD/instret.c" <<'EOF'
-#include <stdio.h>
-int main(void) {
-    unsigned long ir, cy;
-    __asm__ volatile("rdinstret %0" : "=r"(ir));
-    __asm__ volatile("rdcycle   %0" : "=r"(cy));
-    printf("SPIKE_INSTRET=%lu\nSPIKE_CYCLE=%lu\n", ir, cy);
-    return 0;
-}
-EOF
-"$MUSLGCC" -static -march=$RVA22U64_MARCH -mabi=$RVA22_ABI -O2 \
-    "$BLD/instret.c" -o "$ROOT/bin/instret"
-
 # /init: no busybox-init, just do the work and power the machine off
 cat > "$ROOT/init" <<'EOF'
 #!/bin/sh
@@ -63,12 +49,12 @@ cat > "$ROOT/init" <<'EOF'
 exec 0</dev/console 1>/dev/console 2>&1
 /bin/busybox mount -t proc  proc  /proc
 /bin/busybox mount -t sysfs sysfs /sys
-# allow rdcycle/rdinstret from user mode (legacy mode -> scounteren = 0x7)
-echo 2 > /proc/sys/kernel/perf_user_access
 echo "=== busybox: ls -la / ==="
 /bin/busybox ls -la /
 echo "=== ls done ==="
-/bin/instret
+# Instruction count is reported by Spike itself (--stats), not from the target:
+# Linux's SBI PMU driver reprograms the instret CSR during boot, so a userspace
+# rdinstret undercounts the run by several times.
 /bin/busybox poweroff -f
 EOF
 chmod +x "$ROOT/init"

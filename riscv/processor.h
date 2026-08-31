@@ -255,6 +255,10 @@ public:
   reg_t get_csr(int which) { return get_csr(which, insn_t(0), false, true); }
   mmu_t* get_mmu() { return mmu; }
   state_t* get_state() { return &state; }
+  // Monotonic count of instructions retired since reset.  Unlike the minstret
+  // CSR this is not writable by the target, so it is a reliable measure of the
+  // work the simulator has actually performed.
+  uint64_t get_insns_retired() const { return insns_retired; }
   unsigned get_xlen() const { return xlen; }
   unsigned paddr_bits() { return isa.get_max_xlen() == 64 ? 56 : 34; }
   unsigned get_const_xlen() const {
@@ -383,6 +387,7 @@ private:
   unsigned max_vaddr_bits;
   bool histogram_enabled;
   bool log_commits_enabled;
+  uint64_t insns_retired;
   FILE *log_file;
   std::ostream sout_; // needed for socket command interface -s, also used for -d and -l, but not for --log
   bool halt_on_reset;

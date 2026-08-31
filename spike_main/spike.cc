@@ -17,6 +17,7 @@
 #include <string>
 #include <memory>
 #include <fstream>
+#include <chrono>
 #include <limits>
 #include <cinttypes>
 #include <sstream>
@@ -34,6 +35,7 @@ static void help(int exit_code = 1)
   fprintf(stderr, "                          at base addresses a and b (with 4 KiB alignment)\n");
   fprintf(stderr, "  -d                    Interactive debug mode\n");
   fprintf(stderr, "  -g                    Track histogram of PCs\n");
+  fprintf(stderr, "  --stats               Print simulation throughput statistics on exit\n");
   fprintf(stderr, "  -l                    Generate a log of execution\n");
 #ifdef HAVE_BOOST_ASIO
   fprintf(stderr, "  -s                    Command I/O via socket (use with -d)\n");
@@ -323,6 +325,7 @@ int main(int argc, char** argv)
   bool debug = false;
   bool halted = false;
   bool histogram = false;
+  bool stats = false;
   bool log = false;
   bool UNUSED socket = false;  // command line option -s
   bool dump_dts = false;
@@ -377,6 +380,7 @@ int main(int argc, char** argv)
   parser.option('h', "help", 0, [&](const char UNUSED *s){help(0);});
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
   parser.option('g', 0, 0, [&](const char UNUSED *s){histogram = true;});
+  parser.option(0, "stats", 0, [&](const char UNUSED *s){stats = true;});
   parser.option('l', 0, 0, [&](const char UNUSED *s){log = true;});
 #ifdef HAVE_BOOST_ASIO
   parser.option('s', 0, 0, [&](const char UNUSED *s){socket = true;});
@@ -583,7 +587,21 @@ int main(int argc, char** argv)
   s.configure_log(log, log_commits);
   s.set_histogram(histogram);
 
+  const auto start = std::chrono::steady_clock::now();
   auto return_code = s.run();
+  const auto elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - start).count();
+
+  if (stats) {
+    uint64_t insns = 0;
+    for (size_t i = 0; i < cfg.nprocs(); i++)
+      insns += s.get_core(i)->get_insns_retired();
+    fprintf(stderr, "\nsimulation statistics\n");
+    fprintf(stderr, "  instructions retired : %" PRIu64 "\n", insns);
+    fprintf(stderr, "  elapsed wall time    : %.3f s\n", elapsed);
+    fprintf(stderr, "  throughput           : %.2f MIPS\n",
+            elapsed > 0 ? insns / elapsed / 1e6 : 0.0);
+  }
 
   for (auto& mem : mems)
     delete mem.second;
