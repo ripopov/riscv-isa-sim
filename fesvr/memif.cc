@@ -71,9 +71,10 @@ void memif_t::write(addr_t addr, size_t len, const void* bytes)
   }
 
   // now we're aligned
-  bool all_zero = len != 0;
-  for (size_t i = 0; i < len; i++)
-    all_zero &= ((const char*)bytes)[i] == 0;
+  // Short-circuit: a payload is typically megabytes, and all this needs to know
+  // is whether it can be written as a clear rather than a copy.
+  const char* p = (const char*)bytes;
+  const bool all_zero = len != 0 && std::all_of(p, p + len, [](char c) { return c == 0; });
 
   if (all_zero) {
     cmemif->clear_chunk(addr, len);

@@ -449,7 +449,7 @@ private:
   bool icache_holds_page(reg_t vaddr) const { return icache_pages[(vaddr / PGSIZE) % ICACHE_PAGE_TAGS]; }
 
   // implement a TLB for simulator performance
-  static const reg_t TLB_ENTRIES = 256;
+  static const reg_t TLB_ENTRIES = 2048;
   // If a TLB tag has TLB_CHECK_TRIGGERS set, then the MMU must check for a
   // trigger match before completing an access.
   static const reg_t TLB_CHECK_TRIGGERS = reg_t(1) << 63;

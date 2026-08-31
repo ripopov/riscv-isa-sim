@@ -167,8 +167,11 @@ private:
   virtual void idle() override;
   virtual void read_chunk(addr_t taddr, size_t len, void* dst) override;
   virtual void write_chunk(addr_t taddr, size_t len, const void* src) override;
+  template<bool STORE, typename T> void xfer_chunk(addr_t taddr, size_t len, T* host);
   virtual size_t chunk_align() override { return 8; }
-  virtual size_t chunk_max_size() override { return 8; }
+  // A firmware payload is tens of megabytes; transferring it eight bytes at a
+  // time through the MMU used to dominate the cost of starting a simulation.
+  virtual size_t chunk_max_size() override { return 4096; }
   virtual endianness_t get_target_endianness() const override;
 
 public:

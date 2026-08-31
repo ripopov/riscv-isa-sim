@@ -57,9 +57,9 @@ Spike 1.1.1-dev @ `c09c0cce` + local changes. 7 consecutive runs.
 
 | metric | value |
 |---|---|
-| wall clock, reset → `ls` → power off | **0.400 s** mean (0.393 s best) |
+| wall clock, reset → `ls` → power off | **0.383 s** mean (0.379 s best) |
 | retired instructions (whole run) | **116 152 768** (bit-identical every run) |
-| simulation throughput | **290.2 MIPS** mean, 295.6 MIPS best |
+| simulation throughput | **303.6 MIPS** mean, 306.5 MIPS best |
 | peak RSS | 95 MiB |
 | Spike startup + 25 MB ELF load | 0.011 s (≈1.5 % of process time) |
 
@@ -256,6 +256,33 @@ This drops the `sfence.vma`s that flush the instruction cache from 22 443 to
 what remains is dominated by `fence.i`, which has no address operand and so must
 flush everything (290.2 MIPS).
 
+### 10 — the data TLB covered 1 MiB, and loading the payload was byte-at-a-time
+
+Two smaller things, once the instruction side stopped dominating.
+
+`TLB_ENTRIES` was 256, so like the instruction cache the data TLB was direct
+mapped over a window far smaller than the target's working set — 1 MiB. Raising
+it is only affordable now that `sfence.vma` no longer flushes the whole TLB
+(2182 full flushes left, down from 22 462). Measured: 256 → 290.2 MIPS,
+512 → 296.3, 1024 → 297.5, **2048 → 298.1**, 4096 → 292.0. 2048 it is; past that
+the arrays stop fitting alongside everything else.
+
+Starting the simulation was **4 %** of the run, all of it getting the 25 MB
+`fw_payload.elf` into target memory:
+
+* `sim_t::chunk_max_size()` was 8, so the payload went in as 3.2 M virtual calls,
+  each storing one doubleword through the MMU. It now transfers a page at a time,
+  copying directly into target memory where the range is backed by it and
+  falling back to the MMU otherwise. The two conversions in the old path were
+  inverse endianness swaps, so a chunk transfer is a verbatim byte copy either
+  way.
+* `memif_t::write()` decided whether a range was all zeroes with a byte-at-a-time
+  loop over the whole buffer **and no early exit** — 25 MB scanned one byte at a
+  time to discover that byte 0 is not zero. Now `std::all_of`, which
+  short-circuits.
+
+**+4.6 %** together (290.2 → 303.6 MIPS).
+
 ### Verification
 
 Every change above is meant to be semantics-preserving, checked against a
@@ -279,7 +306,8 @@ pristine build of upstream `c09c0cce`:
 | + chunked, mmap-backed target memory | 116 M | 0.654 s | 177.6 |
 | + address-selective `sfence.vma` | 116 M | 0.616 s | 188.5 |
 | + 256 K-entry instruction cache | 116 M | 0.402 s | 289.0 |
-| + icache page tracking (current) | 116 M | 0.400 s | **290.2** |
+| + icache page tracking | 116 M | 0.400 s | 290.2 |
+| + 2048-entry TLB, bulk payload load (current) | 116 M | 0.383 s | **303.6** |
 
 The 533 MIPS figure is real but flattering: the ftrace loop is a tiny, perfectly
 cache-resident hot spot. 160 MIPS on a full defconfig-class boot is the

@@ -540,19 +540,50 @@ void sim_t::idle()
     remote_bitbang->tick();
 }
 
+// Transfers between host and target memory happen in units of chunk_align(),
+// which go through the MMU one doubleword at a time.  Ranges backed by target
+// memory are copied wholesale instead: the load and the store below are inverse
+// endianness conversions, so a chunk transfer is a verbatim copy of the bytes.
+template<bool STORE, typename T>
+void sim_t::xfer_chunk(addr_t taddr, size_t len, T* host)
+{
+  assert(len % chunk_align() == 0);
+
+  while (len > 0) {
+    const size_t n = std::min(len, size_t(PGSIZE - taddr % PGSIZE));
+
+    if (char* mem = addr_to_mem(taddr)) {
+      if constexpr (STORE)
+        memcpy(mem, host, n);
+      else
+        memcpy(host, mem, n);
+    } else {
+      for (size_t i = 0; i < n; i += sizeof(uint64_t)) {
+        if constexpr (STORE) {
+          target_endian<uint64_t> data;
+          memcpy(&data, host + i, sizeof data);
+          debug_mmu->store<uint64_t>(taddr + i, debug_mmu->from_target(data));
+        } else {
+          auto data = debug_mmu->to_target(debug_mmu->load<uint64_t>(taddr + i));
+          memcpy(host + i, &data, sizeof data);
+        }
+      }
+    }
+
+    taddr += n;
+    host += n;
+    len -= n;
+  }
+}
+
 void sim_t::read_chunk(addr_t taddr, size_t len, void* dst)
 {
-  assert(len == 8);
-  auto data = debug_mmu->to_target(debug_mmu->load<uint64_t>(taddr));
-  memcpy(dst, &data, sizeof data);
+  xfer_chunk<false>(taddr, len, (char*)dst);
 }
 
 void sim_t::write_chunk(addr_t taddr, size_t len, const void* src)
 {
-  assert(len == 8);
-  target_endian<uint64_t> data;
-  memcpy(&data, src, sizeof data);
-  debug_mmu->store<uint64_t>(taddr, debug_mmu->from_target(data));
+  xfer_chunk<true>(taddr, len, (const char*)src);
 }
 
 endianness_t sim_t::get_target_endianness() const
