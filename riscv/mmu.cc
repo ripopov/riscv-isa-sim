@@ -17,6 +17,8 @@ mmu_t::mmu_t(simif_t* sim, endianness_t endianness, processor_t* proc, reg_t cac
 #ifdef RISCV_ENABLE_DUAL_ENDIAN
   target_big_endian(endianness == endianness_big),
 #endif
+  fetch_cache(nullptr), icache(nullptr), tlb_insn(nullptr),
+  tlb_epoch(0), icache_epoch(0), walk_leaf_vaddr(0), walk_leaf_shift(LEAF_SHIFT_UNKNOWN),
   check_triggers_fetch(false),
   check_triggers_load(false),
   check_triggers_store(false)
@@ -24,6 +26,7 @@ mmu_t::mmu_t(simif_t* sim, endianness_t endianness, processor_t* proc, reg_t cac
 #ifndef RISCV_ENABLE_DUAL_ENDIAN
   assert(endianness == endianness_little);
 #endif
+  set_fetch_regime(PRV_M, false);
   flush_tlb();
   yield_load_reservation();
 }
@@ -34,15 +37,107 @@ mmu_t::~mmu_t()
 
 void mmu_t::flush_icache()
 {
-  for (size_t i = 0; i < ICACHE_ENTRIES; i++)
-    icache[i].tag = -1;
+  // Invalidate the current set now and every other set when it is selected.
+  icache_epoch++;
+  sync_fetch_cache(fetch_cache);
 }
 
 void mmu_t::flush_tlb()
 {
-  memset(tlb_insn, -1, sizeof(tlb_insn));
+  tlb_epoch++;
+  icache_epoch++;
+  sync_fetch_cache(fetch_cache);
   flush_data_tlb();
-  flush_icache();
+}
+
+void mmu_t::flush_tlb_vaddr(reg_t vaddr)
+{
+  // Every translation records the size of the leaf page it was derived
+  // from, so the entries of the leaf page containing vaddr are found exactly;
+  // translations of unknown size always match.  Cached page table entries
+  // are dropped entirely.  Changes to non-leaf entries require SFENCE.VMA
+  // with rs1 == x0, which keeps the full invalidation.
+  auto covers = [&](reg_t tag, reg_t shift) {
+    return shift >= LEAF_SHIFT_UNKNOWN
+        || (((tag & ~TLB_FLAGS) << PGSHIFT) >> shift) == (vaddr >> shift);
+  };
+  auto flush_entries = [&](dtlb_entry_t* tlb) {
+    for (size_t i = 0; i < TLB_ENTRIES; i++) {
+      if (tlb[i].tag != (reg_t)-1 && covers(tlb[i].tag, tlb[i].leaf_shift))
+        tlb[i].tag = -1;
+    }
+  };
+  flush_entries(tlb_load);
+  flush_entries(tlb_store);
+  memset(pte_cache, -1, sizeof(pte_cache));
+
+  for (size_t index = 0; index < FETCH_REGIMES; index++) {
+    auto& set = fetch_caches[index];
+    // Machine mode fetches are never translated.  Stale sets are rebuilt
+    // before their next use.
+    if (!set || index == PRV_M)
+      continue;
+    if (set->tlb_epoch == tlb_epoch)
+      flush_entries(set->tlb_insn);
+    if (set->icache_epoch != icache_epoch)
+      continue;
+
+    // The largest leaf page size under which this set fetched instructions
+    // from the fenced address bounds the decoded instructions to discard.
+    reg_t shift = 0;
+    for (reg_t s = PGSHIFT; s < 64; s++) {
+      if (!((set->leaf_shifts_seen >> s) & 1))
+        continue;
+      if (s >= LEAF_SHIFT_UNKNOWN || set->fetched_pages.contains(fetch_cache_t::leaf_key(vaddr, s)))
+        shift = s;
+    }
+    if (shift == 0)
+      continue;
+
+    // A leaf page occupies a contiguous, aligned index range of the
+    // direct-mapped cache when it is smaller than the cache.
+    size_t count = ICACHE_ENTRIES, start = 0;
+    if (shift < LEAF_SHIFT_UNKNOWN && (reg_t(1) << shift) / PC_ALIGN < ICACHE_ENTRIES) {
+      count = (size_t(1) << shift) / PC_ALIGN;
+      start = icache_index((vaddr >> shift) << shift);
+    }
+    for (size_t i = 0; i < count; i++) {
+      auto& entry = set->icache[start + i];
+      if (entry.tag != (reg_t)-1 && (shift >= LEAF_SHIFT_UNKNOWN || (entry.tag >> shift) == (vaddr >> shift)))
+        entry.tag = -1;
+    }
+  }
+}
+
+void mmu_t::sync_fetch_cache(fetch_cache_t* set)
+{
+  if (set->tlb_epoch != tlb_epoch) {
+    memset(set->tlb_insn, -1, sizeof(set->tlb_insn));
+    set->tlb_epoch = tlb_epoch;
+  }
+  if (set->icache_epoch != icache_epoch) {
+    for (size_t i = 0; i < ICACHE_ENTRIES; i++)
+      set->icache[i].tag = -1;
+    set->fetched_pages.clear();
+    set->leaf_shifts_seen = 0;
+    set->icache_epoch = icache_epoch;
+  }
+}
+
+void mmu_t::set_fetch_regime(reg_t prv, bool virt)
+{
+  size_t index = (prv & 3) | (virt ? 4 : 0);
+  auto& set = fetch_caches[index];
+  if (!set) {
+    set.reset(new fetch_cache_t);
+    // Start stale so that sync_fetch_cache initializes it.
+    set->tlb_epoch = tlb_epoch - 1;
+    set->icache_epoch = icache_epoch - 1;
+  }
+  sync_fetch_cache(set.get());
+  fetch_cache = set.get();
+  icache = set->icache;
+  tlb_insn = set->tlb_insn;
 }
 
 void mmu_t::flush_data_tlb()
@@ -441,8 +536,27 @@ void mmu_t::flush_stlb_ppn(reg_t ppn)
 
 void mmu_t::flush_itlb_ppn(reg_t ppn)
 {
-  if (flush_tlb_ppn(ppn, tlb_insn, tlb_insn_reverse_tags))
-    flush_icache();
+  if (!tlb_insn_reverse_tags.contains(ppn))
+    return;
+
+  tlb_insn_reverse_tags.clear();
+
+  // Only sets whose translations are current can hold the page; stale sets
+  // are cleared before they are selected again.
+  for (auto& set : fetch_caches) {
+    if (!set || set->tlb_epoch != tlb_epoch)
+      continue;
+    for (size_t i = 0; i < TLB_ENTRIES; i++) {
+      auto& entry = set->tlb_insn[i];
+      auto entry_ppn = entry.data.target_addr >> PGSHIFT;
+      if (entry_ppn == ppn)
+        entry.tag = -1;
+      else if (entry.tag != (reg_t)-1)
+        tlb_insn_reverse_tags.insert(entry_ppn);
+    }
+  }
+
+  flush_icache();
 }
 
 tlb_entry_t mmu_t::refill_tlb(reg_t vaddr, reg_t paddr, char* host_addr, access_type type)
@@ -464,14 +578,17 @@ tlb_entry_t mmu_t::refill_tlb(reg_t vaddr, reg_t paddr, char* host_addr, access_
   switch (type) {
     case FETCH:
       tlb_insn[idx].data = entry;
+      tlb_insn[idx].leaf_shift = walk_leaf_shift;
       tlb_insn[idx].tag = expected_tag | (check_triggers_fetch ? TLB_CHECK_TRIGGERS : 0) | trace_flag | mmio_flag;
       break;
     case LOAD:
       tlb_load[idx].data = entry;
+      tlb_load[idx].leaf_shift = walk_leaf_shift;
       tlb_load[idx].tag = expected_tag | (check_triggers_load ? TLB_CHECK_TRIGGERS : 0) | trace_flag | mmio_flag;
       break;
     case STORE:
       tlb_store[idx].data = entry;
+      tlb_store[idx].leaf_shift = walk_leaf_shift;
       tlb_store[idx].tag = expected_tag | (check_triggers_store ? TLB_CHECK_TRIGGERS : 0) | trace_flag | mmio_flag;
       break;
     default:
@@ -700,6 +817,8 @@ reg_t mmu_t::walk(mem_access_info_t access_info)
   reg_t page_mask = (reg_t(1) << PGSHIFT) - 1;
   reg_t satp = proc->get_state()->satp->readvirt(virt);
   vm_info vm = decode_vm_info(proc->get_const_xlen(), false, mode, satp);
+  walk_leaf_vaddr = addr;
+  walk_leaf_shift = LEAF_SHIFT_UNKNOWN;
 
   bool ss_access = access_info.flags.ss_access;
 
@@ -804,6 +923,8 @@ reg_t mmu_t::walk(mem_access_info_t access_info)
                         | (vpn & ((reg_t(1) << napot_bits) - 1))
                         | (vpn & ((reg_t(1) << ptshift) - 1))) << PGSHIFT;
       reg_t phys = page_base | (addr & page_mask);
+      if (!virt)
+        walk_leaf_shift = PGSHIFT + std::max(ptshift, napot_bits);
       return s2xlate(addr, phys, type, type, virt, hlvx, false) & ~page_mask;
     }
   }

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <memory>
 #include <stdlib.h>
 
 // virtual memory configuration
@@ -36,6 +37,18 @@ const reg_t PGSIZE = 1 << PGSHIFT;
 
 #ifndef MMU_OBSERVE_STORE
 #define MMU_OBSERVE_STORE(addr, data, length)
+#endif
+
+// Slow-path helpers are called from every load/store handler's fast path.
+// With preserve_most the callee saves nearly all registers, so callers keep
+// their live values in registers and need no frame on the common path.
+#if defined(__has_attribute)
+# if __has_attribute(preserve_most) && (defined(__aarch64__) || defined(__x86_64__)) && !defined(_WIN32)
+#  define MMU_COLD_CALL __attribute__((noinline, preserve_most))
+# endif
+#endif
+#ifndef MMU_COLD_CALL
+# define MMU_COLD_CALL __attribute__((noinline))
 #endif
 
 struct insn_fetch_t
@@ -58,11 +71,38 @@ struct tlb_entry_t {
 struct dtlb_entry_t {
   tlb_entry_t data;
   reg_t tag;
+  // log2 of the leaf page size this translation was derived from, so that an
+  // address-specific SFENCE.VMA finds every entry of that leaf page.  It also
+  // keeps the entry a power of two in size, so handlers index by shifting.
+  reg_t leaf_shift;
 };
 
 struct pte_cache_entry_t {
   reg_t paddr;
   reg_t pte;
+};
+
+// Decoded-instruction cache and instruction TLB for one fetch regime.  A fetch
+// regime is a (privilege, virtualization) pair: instruction translations and
+// the decoded instructions built from them are only valid for the regime that
+// filled them, so each regime keeps its own copies and a privilege change
+// selects a set instead of discarding all of them.  Epoch counters implement
+// lazy invalidation: a set whose epoch differs from the MMU's is cleared when
+// it is next selected.
+struct fetch_cache_t {
+  static const reg_t ICACHE_ENTRIES = 65536;
+  static const reg_t TLB_ENTRIES = 256;
+  icache_entry_t icache[ICACHE_ENTRIES];
+  dtlb_entry_t tlb_insn[TLB_ENTRIES];
+  uint64_t tlb_epoch;
+  uint64_t icache_epoch;
+  // Leaf pages (page number and size) that decoded instructions were fetched
+  // from since the cache was last cleared, and the page sizes seen.  An
+  // address-specific SFENCE.VMA uses them to skip caches and index ranges
+  // that cannot hold instructions of the fenced page.
+  bloom_filter_t<reg_t, simple_hash1, simple_hash2, 4096, 3> fetched_pages;
+  uint64_t leaf_shifts_seen;
+  static reg_t leaf_key(reg_t vaddr, reg_t shift) { return ((vaddr >> shift) << 6) | shift; }
 };
 
 struct xlate_flags_t {
@@ -105,18 +145,25 @@ public:
 
   template<typename T>
   T ALWAYS_INLINE load(reg_t addr, xlate_flags_t xlate_flags = {}) {
-    target_endian<T> res;
+    T res;
     bool aligned = (addr & (sizeof(T) - 1)) == 0;
     auto [tlb_hit, host_addr, _] = access_tlb(tlb_load, addr);
 
     if (likely(!xlate_flags.is_special_access() && aligned && tlb_hit)) {
-      res = *(target_endian<T>*)host_addr;
+      res = from_target(*(target_endian<T>*)host_addr);
     } else {
-      load_slow_path(addr, sizeof(T), (uint8_t*)&res, xlate_flags);
+      res = load_slow<T>(addr, xlate_flags);
     }
 
-    MMU_OBSERVE_LOAD(addr,from_target(res),sizeof(T));
+    MMU_OBSERVE_LOAD(addr,res,sizeof(T));
 
+    return res;
+  }
+
+  template<typename T>
+  MMU_COLD_CALL T load_slow(reg_t addr, xlate_flags_t xlate_flags) {
+    target_endian<T> res;
+    load_slow_path(addr, sizeof(T), (uint8_t*)&res, xlate_flags);
     return from_target(res);
   }
 
@@ -156,9 +203,14 @@ public:
     if (!xlate_flags.is_special_access() && likely(aligned && tlb_hit)) {
       *(target_endian<T>*)host_addr = to_target(val);
     } else {
-      target_endian<T> target_val = to_target(val);
-      store_slow_path(addr, sizeof(T), (const uint8_t*)&target_val, xlate_flags, true);
+      store_slow<T>(addr, val, xlate_flags);
     }
+  }
+
+  template<typename T>
+  MMU_COLD_CALL void store_slow(reg_t addr, T val, xlate_flags_t xlate_flags) {
+    target_endian<T> target_val = to_target(val);
+    store_slow_path(addr, sizeof(T), (const uint8_t*)&target_val, xlate_flags, true);
   }
 
   template<typename T>
@@ -303,7 +355,7 @@ public:
     return have_reservation;
   }
 
-  static const reg_t ICACHE_ENTRIES = 4096;
+  static const reg_t ICACHE_ENTRIES = fetch_cache_t::ICACHE_ENTRIES;
 
   inline size_t icache_index(reg_t addr)
   {
@@ -323,6 +375,17 @@ public:
   inline icache_entry_t* refill_icache(reg_t addr, icache_entry_t* entry)
   {
     auto [insn, length] = fetch_insn(addr);
+
+    // Record the leaf page the instruction was fetched from: from its
+    // instruction TLB entry, or from the walk that fetch_insn just performed
+    // when the translation was not cacheable.  An instruction that straddles
+    // two pages walks both; if the last walk was for another page, the size
+    // is unknown and every fence will match.
+    auto& tlb_entry = tlb_insn[(addr / PGSIZE) % TLB_ENTRIES];
+    reg_t shift = (tlb_entry.tag & ~TLB_FLAGS) == addr / PGSIZE ? tlb_entry.leaf_shift
+                : walk_leaf_vaddr / PGSIZE == addr / PGSIZE ? walk_leaf_shift : LEAF_SHIFT_UNKNOWN;
+    fetch_cache->fetched_pages.insert(fetch_cache_t::leaf_key(addr, shift));
+    fetch_cache->leaf_shifts_seen |= reg_t(1) << shift;
 
     insn_fetch_t fetch = {proc->decode_insn(insn), insn};
     entry->tag = addr;
@@ -369,6 +432,13 @@ public:
   void flush_tlb();
   void flush_data_tlb();
   void flush_icache();
+  // SFENCE.VMA with a virtual address: invalidate the translations derived
+  // from the leaf page table entry mapping vaddr.
+  void flush_tlb_vaddr(reg_t vaddr);
+
+  // Select the instruction cache and instruction TLB for a privilege regime.
+  // Data translations are not affected.
+  void set_fetch_regime(reg_t prv, bool virt);
 
   void register_memtracer(memtracer_t*);
 
@@ -399,11 +469,26 @@ private:
   reg_t load_reservation_address;
   reg_t blocksz;
 
-  // implement an instruction cache for simulator performance
-  icache_entry_t icache[ICACHE_ENTRIES];
+  // implement an instruction cache for simulator performance; one per fetch
+  // regime, allocated on first use.  icache and tlb_insn alias the current set.
+  static const size_t FETCH_REGIMES = 8; // index = prv | (virt << 2)
+  std::unique_ptr<fetch_cache_t> fetch_caches[FETCH_REGIMES];
+  fetch_cache_t* fetch_cache;
+  icache_entry_t* icache;
+  dtlb_entry_t* tlb_insn;
+  uint64_t tlb_epoch;
+  uint64_t icache_epoch;
+  void sync_fetch_cache(fetch_cache_t* set);
+
+  // Virtual address and log2 of the leaf page size of the most recent page
+  // walk; two-stage and untranslated accesses record an unknown size, which
+  // matches every fence.
+  static const reg_t LEAF_SHIFT_UNKNOWN = 63;
+  reg_t walk_leaf_vaddr;
+  reg_t walk_leaf_shift;
 
   // implement a TLB for simulator performance
-  static const reg_t TLB_ENTRIES = 256;
+  static const reg_t TLB_ENTRIES = fetch_cache_t::TLB_ENTRIES;
   // If a TLB tag has TLB_CHECK_TRIGGERS set, then the MMU must check for a
   // trigger match before completing an access.
   static const reg_t TLB_CHECK_TRIGGERS = reg_t(1) << 63;
@@ -412,7 +497,6 @@ private:
   static const reg_t TLB_FLAGS = TLB_CHECK_TRIGGERS | TLB_CHECK_TRACER | TLB_MMIO;
   dtlb_entry_t tlb_load[TLB_ENTRIES];
   dtlb_entry_t tlb_store[TLB_ENTRIES];
-  dtlb_entry_t tlb_insn[TLB_ENTRIES];
 
   static const reg_t PTE_CACHE_ENTRIES = 251;
   pte_cache_entry_t pte_cache[PTE_CACHE_ENTRIES];

@@ -156,6 +156,7 @@ void processor_t::reset()
 {
   xlen = isa.get_max_xlen();
   state.reset(this, isa.get_max_isa());
+  mmu->set_fetch_regime(state.prv, state.v);
   mmu->flush_tlb();
   if (any_vector_extensions())
     VU.reset();
@@ -351,13 +352,21 @@ reg_t processor_t::legalize_privilege(reg_t prv)
 
 void processor_t::set_privilege(reg_t prv, bool virt)
 {
-  mmu->flush_tlb();
+  // Data translations depend on the effective privilege, so they are always
+  // discarded.  Instruction translations and decoded instructions depend only
+  // on the new regime, which keeps its own caches.  Debug Mode changes what
+  // memory is accessible, so entering or leaving it discards everything.
+  if (state.debug_mode)
+    mmu->flush_tlb();
+  else
+    mmu->flush_data_tlb();
   state.prev_prv = state.prv;
   state.prev_v = state.v;
   state.prv = legalize_privilege(prv);
   state.v = virt && state.prv != PRV_M;
   state.prv_changed = state.prv != state.prev_prv;
   state.v_changed = state.v != state.prev_v;
+  mmu->set_fetch_regime(state.prv, state.v);
 }
 
 const char* processor_t::get_privilege_string() const
