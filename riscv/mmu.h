@@ -367,6 +367,7 @@ public:
   }
 
   void flush_tlb();
+  void flush_data_tlb();
   void flush_icache();
 
   void register_memtracer(memtracer_t*);

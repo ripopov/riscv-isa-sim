@@ -41,11 +41,15 @@ void mmu_t::flush_icache()
 void mmu_t::flush_tlb()
 {
   memset(tlb_insn, -1, sizeof(tlb_insn));
+  flush_data_tlb();
+  flush_icache();
+}
+
+void mmu_t::flush_data_tlb()
+{
   memset(tlb_load, -1, sizeof(tlb_load));
   memset(tlb_store, -1, sizeof(tlb_store));
   memset(pte_cache, -1, sizeof(pte_cache));
-
-  flush_icache();
 }
 
 [[noreturn]] void throw_access_exception(bool virt, reg_t addr, access_type type)

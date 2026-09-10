@@ -616,11 +616,13 @@ reg_t base_status_csr_t::adjust_sd(const reg_t val) const noexcept {
 }
 
 void base_status_csr_t::maybe_flush_tlb(const reg_t newval) noexcept {
+  // These fields affect data accesses, not instruction fetches.  Preserve the
+  // instruction TLB and decoded instructions when data permissions change.
   if ((newval ^ read()) &
       (MSTATUS_MPP | MSTATUS_MPRV
        | (has_page ? (MSTATUS_MXR | MSTATUS_SUM) : 0)
       ))
-    proc->get_mmu()->flush_tlb();
+    proc->get_mmu()->flush_data_tlb();
 }
 
 namespace {
